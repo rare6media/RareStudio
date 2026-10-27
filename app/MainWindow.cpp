@@ -180,6 +180,12 @@ MainWindow::MainWindow()
 		addScene();
 	m_scenes->setCurrentRow(0);
 
+	// Autosave: a crash (driver, capture hook...) must not cost you destinations, keys or scenes.
+	m_autosave.setInterval(10000);
+	connect(&m_autosave, &QTimer::timeout, this, [this] { persistAll(); });
+	m_autosave.start();
+	connect(m_dests, &QTableWidget::itemChanged, this, [this] { saveDestinations(); }); // cheap; keys survive a crash right after typing
+
 	// Every dock can be toggled from View; Reset layout recovers from a messy arrangement.
 	m_defaultState = saveState(kLayoutVersion);
 	for (QDockWidget *d : findChildren<QDockWidget *>())
@@ -398,8 +404,11 @@ void MainWindow::updateStats()
 
 void MainWindow::openSettings()
 {
-	if (SettingsDialog(this).exec() == QDialog::Accepted)
+	persistAll(); // settings changes touch the video/audio engine; never risk losing state to a crash there
+	if (SettingsDialog(this).exec() == QDialog::Accepted) {
 		m_hotkeys->reload();
+		persistAll();
+	}
 }
 
 // ---- Recording, clips, hotkeys ----------------------------------------------------------------
@@ -594,10 +603,20 @@ void MainWindow::closeEvent(QCloseEvent *e)
 		e->ignore();
 		return;
 	}
+	m_autosave.stop();
 	m_stream.stop();
 	m_rec.shutdown();
 	m_vertical.stop();
 	m_dests->setCurrentItem(nullptr); // commits a key that is still being typed
+	persistAll();
+	QMainWindow::closeEvent(e);
+}
+
+// Everything that must survive a crash: stream destinations and keys, scenes/sources (with their
+// filters, volumes and devices) and the window layout. Called on exit, periodically and before
+// anything risky (settings changes).
+void MainWindow::persistAll() const
+{
 	saveDestinations();
 
 	obs_data_t *out = obs_data_create();
@@ -607,9 +626,10 @@ void MainWindow::closeEvent(QCloseEvent *e)
 	obs_data_array_release(arr);
 	obs_data_release(out);
 
-	QSettings().setValue("ui/geometry", saveGeometry());
-	QSettings().setValue("ui/state", saveState(kLayoutVersion));
-	QMainWindow::closeEvent(e);
+	QSettings s;
+	s.setValue("ui/geometry", saveGeometry());
+	s.setValue("ui/state", saveState(kLayoutVersion));
+	s.sync();
 }
 
 void MainWindow::changeEvent(QEvent *e)

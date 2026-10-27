@@ -458,9 +458,12 @@ bool SettingsDialog::apply()
 	s.setValue("output/encoder", m_encoder->currentData());
 	s.setValue("stream/video_kbps", m_videoKbps->value());
 	s.setValue("stream/audio_kbps", m_audioKbps->value());
-	s.setValue("audio/monitor_id", m_monitor->currentData());
-	s.setValue("audio/monitor_name", m_monitor->currentData(Qt::UserRole + 1));
-	ObsCore::applyMonitoringDevice();
+	// Switching the monitoring device rebuilds every monitor stream, so only touch it when it changed.
+	if (s.value("audio/monitor_id", "default") != m_monitor->currentData()) {
+		s.setValue("audio/monitor_id", m_monitor->currentData());
+		s.setValue("audio/monitor_name", m_monitor->currentData(Qt::UserRole + 1));
+		ObsCore::applyMonitoringDevice();
+	}
 	s.setValue("record/dir", m_dir->text());
 	s.setValue("record/format", m_format->currentData());
 	s.setValue("replay/seconds", m_replaySecs->value());

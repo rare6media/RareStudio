@@ -74,6 +74,7 @@ private:
 	void addDestination(const QString &name, const QString &server, const QString &key, bool enabled);
 	QList<Destination> destinations() const;
 	void saveDestinations() const;
+	void persistAll() const;
 	void loadDestinations();
 	void toggleStream();
 
@@ -92,6 +93,7 @@ private:
 	QLabel *m_statusLabel = nullptr;
 	QLabel *m_stats = nullptr;
 	QTimer m_statsTimer;
+	QTimer m_autosave;
 	os_cpu_usage_info_t *m_cpu = nullptr;
 	quint64 m_lastBytes = 0;
 	qint64 m_lastBytesMs = 0;
