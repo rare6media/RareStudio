@@ -10,6 +10,8 @@
 #include <QTimer>
 
 class ClipsPanel;
+class QAction;
+class StatusChip;
 class HotkeyManager;
 class MixerPanel;
 class QMenu;
@@ -33,7 +35,7 @@ protected:
 
 private:
 	void buildToolbar();
-	void buildScenesDock();
+	void buildScenesDock(const QStringList &order);
 	void showItemMenu(const QPoint &globalPos);
 	void transformSelected();
 	void filtersSelected();
@@ -53,6 +55,9 @@ private:
 	void onShortSaved(const QString &path);
 	void uploadShort(int panelId, const QString &path);
 	void toggleRecord();
+	void togglePause();
+	void syncPauseButton();
+	void takeScreenshot();
 	void toggleReplay();
 	void saveClip();
 	void onHotkey(int action);
@@ -60,6 +65,7 @@ private:
 	void selectInList(const QString &name);
 	void updateStats();
 	void openSettings();
+	void applyDefaultDockSizes();
 	void buildSourcesDock();
 	void buildMixerDock();
 	void buildStreamDock();
@@ -70,8 +76,19 @@ private:
 	void editSelectedSource();
 	void removeSelectedSource();
 	void refreshSources();
+	void updateItemButtons(); // source buttons that need a selection follow it
+
+	// Edit > Copy / Paste / Duplicate. Paste adds the same source (a reference, so one webcam or overlay
+	// can sit in several scenes) unless the scene already shows it, in which case it pastes a copy.
+	void copySource();
+	void pasteSource();
+	void duplicateSource();
+	void placeSource(obs_source_t *src, bool duplicate);
 
 	void addDestination(const QString &name, const QString &server, const QString &key, bool enabled);
+	void editDestination(int row);
+	void refreshDestinationRow(int row);
+	void setDestinationStatus(int row, const QString &state);
 	QList<Destination> destinations() const;
 	void saveDestinations() const;
 	void persistAll() const;
@@ -92,6 +109,14 @@ private:
 	QPushButton *m_goLive = nullptr;
 	QLabel *m_statusLabel = nullptr;
 	QLabel *m_stats = nullptr;
+	QLabel *m_sourcesEmpty = nullptr;
+	QLabel *m_destsEmpty = nullptr;
+	QList<QWidget *> m_itemButtons;
+	QPushButton *m_destRemove = nullptr;
+	StatusChip *m_liveChip = nullptr;
+	StatusChip *m_recChip = nullptr;
+	qint64 m_liveSinceMs = 0;
+	bool m_restarting = false;
 	QTimer m_statsTimer;
 	QTimer m_autosave;
 	os_cpu_usage_info_t *m_cpu = nullptr;
@@ -104,9 +129,18 @@ private:
 	ClipsPanel *m_clips = nullptr;
 	HotkeyManager *m_hotkeys = nullptr;
 	QPushButton *m_recBtn = nullptr;
+	QPushButton *m_pauseBtn = nullptr;
+	QAction *m_pauseAction = nullptr; // the toolbar hides a widget through its action
 	QPushButton *m_replayBtn = nullptr;
 	QPushButton *m_clipBtn = nullptr;
 	QMenu *m_viewMenu = nullptr;
 	QByteArray m_defaultState;
 	Updater *m_updater = nullptr;
+
+	struct CopiedItem {
+		QString source; // looked up again on paste: it may have been renamed or removed since
+		obs_transform_info transform = {};
+		obs_sceneitem_crop crop = {};
+		bool visible = true;
+	} m_copied;
 };

@@ -9,10 +9,10 @@ bool MultiStream::start(const QList<Destination> &dests, QString *error)
 	if (live())
 		return true;
 
-	QList<Destination> active;
-	for (const Destination &d : dests)
-		if (d.enabled && !d.server.isEmpty())
-			active.append(d);
+	QList<QPair<int, Destination>> active;
+	for (int i = 0; i < dests.size(); ++i)
+		if (dests[i].enabled && !dests[i].server.isEmpty())
+			active.append({i, dests[i]});
 	if (active.isEmpty()) {
 		if (error)
 			*error = "No enabled destinations.";
@@ -24,9 +24,9 @@ bool MultiStream::start(const QList<Destination> &dests, QString *error)
 		return false;
 	m_encoderName = pool.videoName();
 
-	for (const Destination &d : active) {
+	for (const auto &[index, d] : active) {
 		Out o;
-		o.name = d.name;
+		o.index = index;
 
 		obs_data_t *ss = obs_data_create();
 		obs_data_set_string(ss, "server", d.server.toUtf8().constData());
@@ -50,7 +50,7 @@ bool MultiStream::start(const QList<Destination> &dests, QString *error)
 		obs_output_set_audio_encoder(o.output, pool.audio(), 0);
 
 		signal_handler_t *sh = obs_output_get_signal_handler(o.output);
-		auto *ctx = o.ctx = new SignalCtx{this, d.name};
+		auto *ctx = o.ctx = new SignalCtx{this, index};
 		signal_handler_connect(sh, "start", onSignal, ctx);
 		signal_handler_connect(sh, "stop", onSignal, ctx);
 		signal_handler_connect(sh, "reconnect", onSignal, ctx);
@@ -60,8 +60,16 @@ bool MultiStream::start(const QList<Destination> &dests, QString *error)
 	}
 
 	bool any = false;
-	for (const Out &o : m_outputs)
-		any |= obs_output_start(o.output);
+	for (const Out &o : m_outputs) {
+		const bool ok = obs_output_start(o.output);
+		any |= ok;
+		if (!ok) { // never connected, so no stop signal will come: say why now
+			const char *err = obs_output_get_last_error(o.output);
+			emit destinationState(o.index, err && *err ? QString("error: %1").arg(err) : "could not connect");
+		} else {
+			emit destinationState(o.index, "connecting...");
+		}
+	}
 	if (!any) {
 		if (error)
 			*error = "No destination could start.";
@@ -82,8 +90,8 @@ void MultiStream::onSignal(void *param, calldata_t *cd)
 		const char *err = obs_output_get_last_error(out);
 		state = err && *err ? QString("error: %1").arg(err) : "offline";
 	}
-	QMetaObject::invokeMethod(ctx->self, [self = ctx->self, n = ctx->name, state] {
-		emit self->destinationState(n, state);
+	QMetaObject::invokeMethod(ctx->self, [self = ctx->self, i = ctx->index, state] {
+		emit self->destinationState(i, state);
 	}, Qt::QueuedConnection);
 }
 

@@ -76,8 +76,10 @@ WebDock::WebDock(const QString &title, const QList<Site> &sites, QWidget *parent
 		auto *home = new QPushButton("Home");
 		back->setToolTip("Back");
 		reload->setToolTip("Reload");
-		for (auto *b : {back, reload})
+		for (auto *b : {back, reload}) {
 			b->setFixedWidth(34);
+			b->setProperty("compact", true);
+		}
 		nav->addWidget(back);
 		nav->addWidget(reload);
 		nav->addWidget(home);

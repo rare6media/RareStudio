@@ -2,5 +2,6 @@
   <qresource prefix="/">
     <file alias="logo">../assets/logo.png</file>
     <file alias="style.qss">style.qss</file>
+    <file alias="check.svg">check.svg</file>
   </qresource>
 </RCC>

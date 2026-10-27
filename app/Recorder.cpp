@@ -6,9 +6,13 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QImage>
 #include <QMetaObject>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThreadPool>
+
+#include <atomic>
 
 QString Recorder::defaultDir()
 {
@@ -54,13 +58,83 @@ bool Recorder::startRecording(QString *error)
 		return false;
 	}
 	m_clock.start();
+	m_pausedMs = 0;
+	m_pausedSince = -1;
 	return true;
 }
 
 void Recorder::stopRecording()
 {
-	if (m_record)
-		obs_output_stop(m_record); // finishes asynchronously; the stop signal calls finishRecord()
+	if (!m_record)
+		return;
+	setPaused(false); // the muxer writes a cleaner file when it isn't stopped mid-pause
+	obs_output_stop(m_record); // finishes asynchronously; the stop signal calls finishRecord()
+}
+
+qint64 Recorder::recordingSeconds() const
+{
+	if (!m_record)
+		return 0;
+	const qint64 now = m_clock.elapsed();
+	return (now - m_pausedMs - (m_pausedSince >= 0 ? now - m_pausedSince : 0)) / 1000;
+}
+
+bool Recorder::setPaused(bool pause)
+{
+	if (!m_record || paused() == pause)
+		return m_record != nullptr;
+	if (!obs_output_pause(m_record, pause))
+		return false;
+	if (pause) {
+		m_pausedSince = m_clock.elapsed();
+	} else {
+		m_pausedMs += m_clock.elapsed() - m_pausedSince;
+		m_pausedSince = -1;
+	}
+	return true;
+}
+
+void Recorder::screenshot()
+{
+	obs_video_info ovi;
+	if (!obs_get_video_info(&ovi)) {
+		emit screenshotSaved(QString());
+		return;
+	}
+	const QString dir = QSettings().value("record/dir", defaultDir()).toString();
+	QDir().mkpath(dir);
+
+	auto *shot = new Shot{this,
+			      QDir(dir).filePath("Screenshot_" + QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") + ".png"),
+			      int(ovi.output_width), int(ovi.output_height)};
+	video_scale_info conv = {};
+	conv.format = VIDEO_FORMAT_BGRA;
+	conv.width = ovi.output_width;
+	conv.height = ovi.output_height;
+	conv.range = VIDEO_RANGE_FULL;
+	conv.colorspace = VIDEO_CS_SRGB;
+	obs_add_raw_video_callback(&conv, &Recorder::onShotFrame, shot);
+}
+
+// One frame of the main output, converted to BGRA by libobs. This runs on the video thread: it only
+// copies the pixels and hands everything else to the UI thread, which also disconnects the callback
+// (disconnecting from inside it would deadlock).
+void Recorder::onShotFrame(void *param, video_data *frame)
+{
+	auto *s = static_cast<Shot *>(param);
+	if (s->taken.exchange(true))
+		return;
+	const QImage img = QImage(frame->data[0], s->w, s->h, int(frame->linesize[0]), QImage::Format_RGB32).copy();
+	QMetaObject::invokeMethod(s->self, [s, img] {
+		obs_remove_raw_video_callback(&Recorder::onShotFrame, s);
+		// PNG encoding of a 1080p frame takes a moment: keep it off the UI thread.
+		QThreadPool::globalInstance()->start([self = s->self, path = s->path, img] {
+			const bool ok = img.save(path, "PNG");
+			QMetaObject::invokeMethod(self, [self, path, ok] { emit self->screenshotSaved(ok ? path : QString()); },
+						  Qt::QueuedConnection);
+		});
+		delete s;
+	}, Qt::QueuedConnection);
 }
 
 bool Recorder::startReplay(QString *error)

@@ -4,6 +4,7 @@
 #include "SelfTest.h"
 #include "SettingsDialog.h"
 #include "TransitionManager.h"
+#include "UiBits.h"
 
 #include <QApplication>
 #include <QDir>
@@ -11,7 +12,10 @@
 #include <QIcon>
 #include <QSettings>
 #include <QMessageBox>
+#include <QProcess>
 #include <QStyleFactory>
+
+#include <cmath>
 
 int main(int argc, char **argv)
 {
@@ -43,26 +47,33 @@ int main(int argc, char **argv)
 		qputenv("APPDATA", prof);
 	}
 
+	// Settings > Interface > size: Qt scales every widget, font and the preview's pixel mapping.
+	// It has to be known before the application object exists.
+	QCoreApplication::setApplicationName("RareStudio");
+	QCoreApplication::setOrganizationName("RareStudio");
+	if (const double scale = UiBits::scaleFactor(); std::abs(scale - 1.0) > 0.01 && qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR"))
+		qputenv("QT_SCALE_FACTOR", QByteArray::number(scale, 'f', 2));
+
 	QApplication app(argc, argv);
-	app.setApplicationName("RareStudio");
-	app.setOrganizationName("RareStudio");
 	app.setApplicationVersion(RARESTUDIO_VERSION);
 
 	app.setStyle(QStyleFactory::create("Fusion"));
 	QPalette p;
-	p.setColor(QPalette::Window, QColor(30, 30, 36));
+	p.setColor(QPalette::Window, QColor(17, 17, 23));
 	p.setColor(QPalette::WindowText, Qt::white);
-	p.setColor(QPalette::Base, QColor(22, 22, 27));
-	p.setColor(QPalette::AlternateBase, QColor(30, 30, 36));
+	p.setColor(QPalette::Base, QColor(18, 18, 25));
+	p.setColor(QPalette::AlternateBase, QColor(23, 23, 31));
 	p.setColor(QPalette::Text, Qt::white);
-	p.setColor(QPalette::Button, QColor(44, 44, 54));
+	p.setColor(QPalette::Button, QColor(31, 31, 42));
 	p.setColor(QPalette::ButtonText, Qt::white);
 	p.setColor(QPalette::Highlight, QColor(124, 58, 237));
+	p.setColor(QPalette::PlaceholderText, QColor(110, 110, 132));
 	p.setColor(QPalette::HighlightedText, Qt::white);
 	app.setPalette(p);
 	app.setWindowIcon(QIcon(":/logo"));
 	if (QFile css(":/style.qss"); css.open(QIODevice::ReadOnly))
 		app.setStyleSheet(QString::fromUtf8(css.readAll()));
+	UiBits::installEffects(app);
 
 	// libobs locates Game Capture's hook files relative to the working directory, assuming OBS's
 	// bin\64bit layout. Mirror it so "..\..\data\obs-plugins\win-capture" resolves to our data dir.
@@ -99,6 +110,11 @@ int main(int argc, char **argv)
 			ObsCore::instance().shutdown();
 			return rc;
 		}
+		if (const int i = args.indexOf("--selftest-stability"); i >= 0) {
+			const int rc = SelfTest::stability(args.value(i + 1, QDir::tempPath() + "/rarestudio-selftest"));
+			ObsCore::instance().shutdown();
+			return rc;
+		}
 		if (const int i = args.indexOf("--selftest-transitions"); i >= 0) {
 			const int rc = SelfTest::transitions(args.value(i + 1, QDir::tempPath() + "/rarestudio-selftest"));
 			ObsCore::instance().shutdown();
@@ -113,5 +129,9 @@ int main(int argc, char **argv)
 		rc = app.exec();
 	}
 	ObsCore::instance().shutdown();
+	// Settings > Interface size asks for a restart; start the new copy only once this one has let go
+	// of the webcam, capture hooks and encoders.
+	if (app.property("rsRestart").toBool())
+		QProcess::startDetached(QCoreApplication::applicationFilePath(), app.arguments().mid(1));
 	return rc;
 }

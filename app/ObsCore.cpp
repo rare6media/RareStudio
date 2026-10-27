@@ -3,6 +3,7 @@
 #include "AudioPresets.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QSettings>
@@ -113,8 +114,31 @@ void ObsCore::shutdown()
 		obs_source_release(m_desktop);
 	if (m_mic)
 		obs_source_release(m_mic);
-	m_scene = nullptr;
+	m_scene = m_program = nullptr;
 	m_desktop = m_mic = nullptr;
+
+	// obs_shutdown() unloads every plugin DLL *before* it frees whatever sources are still alive, and it
+	// waits on the destroy queue only once. Destroying a scene releases its items, which queues their
+	// destruction behind that single wait: a media source still tearing down its network threads then ran
+	// (or crashed, in the audio thread) after its plugin was gone. Clear everything first and keep draining
+	// until nothing more gets destroyed, the way OBS itself does.
+	auto remove = [](void *, obs_source_t *src) {
+		obs_source_remove(src);
+		return true;
+	};
+	obs_enum_scenes(remove, nullptr);
+	obs_enum_sources(remove, nullptr);
+	QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+	do {
+		QCoreApplication::sendPostedEvents(nullptr);
+	} while (obs_wait_for_destroy_queue());
+	obs_enum_sources(
+		[](void *, obs_source_t *src) {
+			blog(LOG_WARNING, "shutdown: source '%s' is still referenced", obs_source_get_name(src));
+			return true;
+		},
+		nullptr);
+
 	obs_shutdown();
 	m_running = false;
 }

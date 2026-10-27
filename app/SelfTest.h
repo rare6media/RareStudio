@@ -23,4 +23,9 @@ int video(const QString &outDir);
 // renders them to PNGs in `outDir`, to catch construction crashes and layout problems.
 int ui(const QString &outDir);
 
+// Drives the real main window through the flows that used to crash or lose work: adding stream
+// destinations, adding a media source and switching it to a URL/stream, and the live autosave.
+// Writes stability.txt into `outDir` (PASS/FAIL per check); returns non-zero on any failure.
+int stability(const QString &outDir);
+
 } // namespace SelfTest

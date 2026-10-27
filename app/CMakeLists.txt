@@ -2,6 +2,8 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebEngineWidgets)
 
 add_executable(RareStudioApp WIN32
   main.cpp
+  Autosave.h Autosave.cpp
+  UiBits.h UiBits.cpp
   ObsCore.h ObsCore.cpp
   MultiStream.h MultiStream.cpp
   PreviewWidget.h PreviewWidget.cpp
@@ -33,6 +35,10 @@ target_compile_definitions(RareStudioApp PRIVATE
   RARESTUDIO_VERSION="${PROJECT_VERSION}"
   UNICODE _UNICODE NOMINMAX)
 
+# Release builds still get a PDB (kept in the build tree, never staged) so crash dumps resolve to source lines.
+target_compile_options(RareStudioApp PRIVATE $<$<CONFIG:Release>:/Z7>)
+target_link_options(RareStudioApp PRIVATE $<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>)
+
 target_include_directories(RareStudioApp PRIVATE
   "${OBS_SOURCE_DIR}/libobs"
   "${OBS_BUILD_DIR}/config")
@@ -63,4 +69,6 @@ add_custom_command(TARGET RareStudioApp POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E echo "${PROJECT_VERSION}" > "${STAGE}/version.txt"
   COMMAND "${Qt6_DIR}/../../../bin/windeployqt.exe" --release --no-translations
           --no-system-d3d-compiler --no-opengl-sw "${STAGE}/RareStudioApp.exe"
+  # Lets the headless self-tests run with QT_QPA_PLATFORM=offscreen (windeployqt only ships qwindows).
+  COMMAND ${CMAKE_COMMAND} -E copy "${Qt6_DIR}/../../../plugins/platforms/qoffscreen.dll" "${STAGE}/platforms/"
   COMMENT "Staging RareStudio runtime")

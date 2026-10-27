@@ -1,6 +1,7 @@
 #include "MixerPanel.h"
 
 #include "AudioPresets.h"
+#include "Autosave.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -166,7 +167,8 @@ void LevelMeter::paintEvent(QPaintEvent *)
 		p.drawLine(x, tickY, x, tickY + 2);
 		const QString t = QString::number(db);
 		const int tw = p.fontMetrics().horizontalAdvance(t);
-		const int tx = std::clamp(x - tw / 2, 0, barW - tw);
+		// Centred under the tick, except at the ends where it sits beside it (not on top of it).
+		const int tx = x - tw / 2 < 0 ? x + 3 : x + tw / 2 > barW ? x - tw - 3 : x - tw / 2;
 		p.drawText(tx, tickY + 3, tw + 2, 10, Qt::AlignLeft | Qt::AlignTop, t);
 	}
 }
@@ -231,6 +233,7 @@ MixerStrip::MixerStrip(const QString &label, obs_source_t *source, QWidget *pare
 		Strong s(m_weak);
 		if (s.s)
 			obs_source_set_muted(s.s, on);
+		Autosave::touch();
 		m_levels->setMuted(on);
 		m_lastMuted = on;
 	});
@@ -285,6 +288,7 @@ void MixerStrip::buildMenu()
 				Strong s(m_weak);
 				if (s.s)
 					obs_source_set_monitoring_type(s.s, t);
+				Autosave::touch();
 			});
 		}
 		connect(mon, &QMenu::aboutToShow, this, [this, mon] {
@@ -306,8 +310,10 @@ void MixerStrip::buildMenu()
 		const int ms = QInputDialog::getInt(this, "Sync offset",
 						    "Delay this source by (ms). Negative values play it earlier:", cur,
 						    -950, 20000, 10, &ok);
-		if (ok)
+		if (ok) {
 			obs_source_set_sync_offset(s.s, int64_t(ms) * 1000000);
+			Autosave::touch();
+		}
 	});
 	m_menu->addAction("Reset volume to 0 dB", this, [this] { setDb(0.0, true); });
 
@@ -458,7 +464,8 @@ void MixerPanel::syncSources()
 		[](void *p, obs_source_t *src) {
 			if (obs_source_get_type(src) == OBS_SOURCE_TYPE_INPUT &&
 			    (obs_source_get_output_flags(src) & OBS_SOURCE_AUDIO))
-				static_cast<QList<obs_source_t *> *>(p)->append(obs_source_get_ref(src));
+				if (obs_source_t *ref = obs_source_get_ref(src)) // null if it is being destroyed right now
+					static_cast<QList<obs_source_t *> *>(p)->append(ref);
 			return true;
 		},
 		&found);

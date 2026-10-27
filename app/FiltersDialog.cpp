@@ -120,8 +120,10 @@ FiltersDialog::FiltersDialog(obs_source_t *source, QWidget *parent)
 	up->setToolTip("Move up (applied earlier)");
 	down->setToolTip("Move down (applied later)");
 	rem->setToolTip("Remove filter");
-	for (auto *b : {up, down, rem})
+	for (auto *b : {up, down, rem}) {
 		b->setFixedWidth(34);
+		b->setProperty("compact", true); // glyph buttons: no side padding (style.qss)
+	}
 
 	auto *btnRow = new QHBoxLayout;
 	btnRow->addWidget(add);

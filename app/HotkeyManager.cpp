@@ -62,7 +62,7 @@ HotkeyManager::~HotkeyManager()
 
 QList<HotkeyManager::Action> HotkeyManager::configurable()
 {
-	return {ToggleStream, ToggleRecord, ToggleReplay, SaveClip, MuteMic, NextScene, PrevScene};
+	return {ToggleStream, ToggleRecord, PauseRecord, ToggleReplay, SaveClip, Screenshot, MuteMic, NextScene, PrevScene};
 }
 
 QString HotkeyManager::settingsKey(Action a)
@@ -75,6 +75,8 @@ QString HotkeyManager::settingsKey(Action a)
 	case MuteMic: return "hotkeys/mute_mic";
 	case NextScene: return "hotkeys/next_scene";
 	case PrevScene: return "hotkeys/prev_scene";
+	case PauseRecord: return "hotkeys/pause_record";
+	case Screenshot: return "hotkeys/screenshot";
 	default: return {};
 	}
 }
@@ -89,6 +91,8 @@ QString HotkeyManager::label(Action a)
 	case MuteMic: return "Mute / unmute microphone";
 	case NextScene: return "Next scene";
 	case PrevScene: return "Previous scene";
+	case PauseRecord: return "Pause / resume recording";
+	case Screenshot: return "Screenshot of the output";
 	default: return {};
 	}
 }

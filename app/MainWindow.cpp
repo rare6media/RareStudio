@@ -16,13 +16,22 @@
 #include "Updater.h"
 #include "WebDock.h"
 
+#include "Autosave.h"
+#include "UiBits.h"
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QMenu>
 #include <QTimer>
 #include <QComboBox>
+#include <QDesktopServices>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QFormLayout>
+#include <QProcess>
+#include <QToolButton>
+#include <QUrl>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -31,7 +40,9 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSettings>
+#include <QStyle>
 #include <QLineEdit>
 #include <QSpinBox>
 #include <QSplitter>
@@ -43,6 +54,10 @@
 
 #include <QDateTime>
 #include <QIcon>
+
+#include <algorithm>
+#include <climits>
+#include <cmath>
 
 #include <windows.h>
 #include <psapi.h>
@@ -59,36 +74,169 @@ QString scenesFile()
 	return dir + "/scenes.json";
 }
 
+// Streaming only ever needs the server + stream key each platform shows you; no API keys, no sign-in.
 struct Preset {
 	const char *name;
 	const char *server;
+	const char *keyPage; // where the platform shows your stream key
+	const char *help;
 };
 const Preset kPresets[] = {
-	{"Twitch", "rtmp://live.twitch.tv/app"},
-	{"YouTube", "rtmp://a.rtmp.youtube.com/live2"},
-	{"Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net/app"},
-	{"Facebook", "rtmps://live-api-s.facebook.com:443/rtmp/"},
-	{"Custom RTMP", ""},
+	{"Twitch", "rtmp://live.twitch.tv/app", "https://dashboard.twitch.tv/settings/stream",
+	 "Creator Dashboard > Settings > Stream > Primary Stream key > Copy."},
+	{"YouTube", "rtmp://a.rtmp.youtube.com/live2", "https://www.youtube.com/live_dashboard",
+	 "YouTube Studio > Go live > Stream > Stream key > Copy."},
+	{"Kick", "rtmps://fa723fc1b171.global-contribute.live-video.net/app", "https://kick.com/dashboard/settings/stream",
+	 "Dashboard > Settings > Stream URL & Key. If Kick shows a different Stream URL, paste that as the server."},
+	{"TikTok", "", "https://livecenter.tiktok.com/producer",
+	 "TikTok LIVE Producer shows a Server URL and Stream key together; paste both. TikTok only offers keys to "
+	 "accounts it has approved for LIVE (usually 1,000+ followers); if the page shows no key, your account "
+	 "isn't eligible yet and no app can get one for you."},
+	{"Facebook", "rtmps://live-api-s.facebook.com:443/rtmp/", "https://www.facebook.com/live/producer",
+	 "Live Producer > Streaming software > Stream key."},
+	{"Custom RTMP", "", nullptr, "Any RTMP/RTMPS server: paste the server URL and stream key you were given."},
 };
+
+const Preset *presetFor(const QString &name)
+{
+	for (const Preset &p : kPresets)
+		if (name.startsWith(QString::fromUtf8(p.name), Qt::CaseInsensitive))
+			return &p;
+	return nullptr;
+}
+
+// Add / edit one stream destination. Returns false on Cancel.
+bool editDestinationDialog(QWidget *parent, Destination &d, bool isNew)
+{
+	QDialog dlg(parent);
+	dlg.setWindowTitle(isNew ? "Add stream destination" : "Edit stream destination");
+	dlg.resize(520, 0);
+
+	auto *platform = new QComboBox;
+	for (const Preset &p : kPresets)
+		platform->addItem(QString::fromUtf8(p.name));
+	auto *name = new QLineEdit(d.name);
+	auto *server = new QLineEdit(d.server);
+	server->setPlaceholderText("rtmp://...");
+	auto *key = new QLineEdit(d.key);
+	key->setEchoMode(QLineEdit::Password);
+	key->setPlaceholderText("Paste your stream key");
+	auto *show = new QPushButton("Show");
+	show->setCheckable(true);
+	auto *find = new QPushButton("Get my stream key ↗");
+	find->setObjectName("accent");
+	auto *help = new QLabel;
+	help->setObjectName("hint");
+	help->setWordWrap(true);
+
+	auto *keyRow = new QHBoxLayout;
+	keyRow->addWidget(key, 1);
+	keyRow->addWidget(show);
+
+	auto *form = new QFormLayout;
+	form->setHorizontalSpacing(14);
+	form->setVerticalSpacing(10);
+	form->addRow("Platform", platform);
+	form->addRow("Name", name);
+	form->addRow("Server", server);
+	form->addRow("Stream key", keyRow);
+	form->addRow("", find);
+
+	auto *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+	auto *lay = new QVBoxLayout(&dlg);
+	lay->setContentsMargins(18, 18, 18, 14);
+	lay->setSpacing(14);
+	lay->addLayout(form);
+	// Outside the form: a wrapped label in a form row doesn't grow, and the TikTok note is four lines.
+	help->setMinimumHeight(help->fontMetrics().lineSpacing() * 4);
+	help->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	lay->addWidget(help);
+	lay->addWidget(box);
+
+	auto sync = [&](bool fillDefaults) {
+		const Preset &p = kPresets[platform->currentIndex()];
+		help->setText(QString::fromUtf8(p.help));
+		find->setVisible(p.keyPage != nullptr);
+		if (fillDefaults) {
+			// Only replace what still looks like another preset's default, never something you typed.
+			bool defaultName = name->text().isEmpty(), defaultServer = server->text().isEmpty();
+			for (const Preset &q : kPresets) {
+				defaultName |= name->text() == QString::fromUtf8(q.name);
+				defaultServer |= server->text() == QString::fromUtf8(q.server);
+			}
+			if (defaultName)
+				name->setText(QString::fromUtf8(p.name));
+			if (defaultServer)
+				server->setText(QString::fromUtf8(p.server));
+		}
+	};
+	if (const Preset *p = presetFor(d.name))
+		platform->setCurrentIndex(int(p - kPresets));
+	else if (!isNew)
+		platform->setCurrentIndex(int(std::size(kPresets)) - 1); // custom
+	sync(isNew);
+	QObject::connect(platform, &QComboBox::currentIndexChanged, &dlg, [&] { sync(true); });
+	QObject::connect(show, &QPushButton::toggled, &dlg, [&](bool on) {
+		key->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
+		show->setText(on ? "Hide" : "Show");
+	});
+	QObject::connect(find, &QPushButton::clicked, &dlg, [&] {
+		if (const char *url = kPresets[platform->currentIndex()].keyPage)
+			QDesktopServices::openUrl(QUrl(QString::fromUtf8(url)));
+	});
+	QObject::connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	QObject::connect(box, &QDialogButtonBox::accepted, &dlg, [&] {
+		if (server->text().trimmed().isEmpty()) {
+			QMessageBox::warning(&dlg, "RareStudio", "Enter the server URL the platform gave you.");
+			return;
+		}
+		dlg.accept();
+	});
+	if (dlg.exec() != QDialog::Accepted)
+		return false;
+	d.name = name->text().trimmed().isEmpty() ? platform->currentText() : name->text().trimmed();
+	d.server = server->text().trimmed();
+	d.key = key->text().trimmed(); // pasted keys often carry a stray space or newline
+	return true;
+}
 
 const struct {
 	const char *id;
+	const char *blurb;
 } kSourceTypes[] = {
-	{"monitor_capture"},
-	{"window_capture"},
-	{"game_capture"},
-	{"dshow_input"},
-	{"ffmpeg_source"}, // media file / URL
-	{"image_source"},
-	{"slideshow"},
-	{"text_gdiplus"},
-	{"color_source_v3"},
-	{"wasapi_input_capture"},
-	{"wasapi_output_capture"},
-	{"wasapi_process_output_capture"}, // audio from a single app
+	{"monitor_capture", "A whole monitor"},
+	{"window_capture", "One app's window"},
+	{"game_capture", "A full-screen or windowed game (lowest overhead)"},
+	{"dshow_input", "Webcam or capture card"},
+	{"ffmpeg_source", "Video/audio file, or a stream URL (untick Local File)"},
+	{"image_source", "A picture or overlay"},
+	{"slideshow", "Several pictures in rotation"},
+	{"text_gdiplus", "Text, live as you type"},
+	{"color_source_v3", "A solid colour"},
+	{"wasapi_input_capture", "A microphone or line-in"},
+	{"wasapi_output_capture", "Everything a playback device plays"},
+	{"wasapi_process_output_capture", "Audio from a single app"},
 };
 
 constexpr int kPaneHeadHeight = 32;
+
+// Every list in the UI finds sources by name, so names have to stay unique.
+bool nameTaken(const QString &name)
+{
+	if (obs_source_t *s = obs_get_source_by_name(name.toUtf8().constData())) {
+		obs_source_release(s);
+		return true;
+	}
+	return false;
+}
+
+QString uniqueName(const QString &base)
+{
+	QString name = base;
+	for (int n = 2; nameTaken(name); ++n)
+		name = QString("%1 %2").arg(base).arg(n);
+	return name;
+}
 
 } // namespace
 
@@ -155,21 +303,36 @@ MainWindow::MainWindow()
 
 	ObsCore &core = ObsCore::instance();
 
-	// Restore saved scenes, or start with one empty scene.
-	if (obs_data_t *saved = obs_data_create_from_json_file(scenesFile().toUtf8().constData())) {
+	// Restore saved scenes, or start with one empty scene. A file cut short by a crash mid-write falls
+	// back to the previous good copy (scenes.json.bak).
+	QStringList sceneOrder;
+	QString lastScene;
+	if (obs_data_t *saved = obs_data_create_from_json_file_safe(scenesFile().toUtf8().constData(), "bak")) {
 		if (obs_data_array_t *arr = obs_data_get_array(saved, "sources")) {
 			obs_load_sources(arr, nullptr, nullptr);
 			obs_data_array_release(arr);
 		}
+		if (obs_data_array_t *order = obs_data_get_array(saved, "scene_order")) {
+			for (size_t i = 0, n = obs_data_array_count(order); i < n; ++i) {
+				obs_data_t *it = obs_data_array_item(order, i);
+				sceneOrder << QString::fromUtf8(obs_data_get_string(it, "name"));
+				obs_data_release(it);
+			}
+			obs_data_array_release(order);
+		}
+		lastScene = QString::fromUtf8(obs_data_get_string(saved, "current_scene"));
 		obs_data_release(saved);
 	}
+	const bool uncleanExit = QSettings().value("session/running", false).toBool();
+	QSettings().setValue("session/running", true); // cleared again on a normal exit
 
-	// Menus first so their order is File, View.
+	// Menus first so their order is File, Edit, View.
 	QMenu *file = menuBar()->addMenu("&File");
+	QMenu *edit = menuBar()->addMenu("&Edit");
 	m_viewMenu = menuBar()->addMenu("&View");
 
 	buildToolbar();
-	buildScenesDock();
+	buildScenesDock(sceneOrder);
 	buildSourcesDock();
 	buildMixerDock();
 	buildStreamDock();
@@ -178,13 +341,25 @@ MainWindow::MainWindow()
 
 	if (m_scenes->count() == 0)
 		addScene();
-	m_scenes->setCurrentRow(0);
+	const auto last = m_scenes->findItems(lastScene, Qt::MatchExactly);
+	m_scenes->setCurrentRow(last.isEmpty() ? 0 : m_scenes->row(last.first()));
 
-	// Autosave: a crash (driver, capture hook...) must not cost you destinations, keys or scenes.
+	// Autosave: every change is written moments after you make it (Autosave::touch from the UI, plus
+	// libobs' own source signals), and a slow timer backs that up. A crash (driver, capture hook...)
+	// must never cost you a scene, a source, a filter or a stream key.
+	Autosave *autosave = Autosave::instance();
+	autosave->setSaver([this] { persistAll(); });
+	autosave->hookObs();
 	m_autosave.setInterval(10000);
 	connect(&m_autosave, &QTimer::timeout, this, [this] { persistAll(); });
 	m_autosave.start();
-	connect(m_dests, &QTableWidget::itemChanged, this, [this] { saveDestinations(); }); // cheap; keys survive a crash right after typing
+	connect(m_dests, &QTableWidget::itemChanged, this, [] { Autosave::touch(); }); // the On checkbox
+	connect(m_preview, &PreviewWidget::itemEdited, this, [] { Autosave::touch(); }); // drags, nudges
+	if (uncleanExit)
+		QTimer::singleShot(800, this, [this] {
+			statusBar()->showMessage("RareStudio didn't close normally last time. Your scenes, sources and stream "
+						 "destinations were restored from the autosave.", 15000);
+		});
 
 	// Every dock can be toggled from View; Reset layout recovers from a messy arrangement.
 	m_defaultState = saveState(kLayoutVersion);
@@ -195,6 +370,7 @@ MainWindow::MainWindow()
 		restoreState(m_defaultState, kLayoutVersion);
 		for (QDockWidget *d : findChildren<QDockWidget *>())
 			d->setVisible(d->objectName() != "dashboards");
+		applyDefaultDockSizes();
 	});
 
 	// Preview <-> source list stay in sync; right-click and Delete work on the preview itself.
@@ -205,12 +381,42 @@ MainWindow::MainWindow()
 	file->addAction("&Settings...", this, &MainWindow::openSettings);
 	file->addAction("Check for &updates", this, &MainWindow::checkForUpdates);
 	file->addSeparator();
+	file->addAction("Take &screenshot", this, &MainWindow::takeScreenshot)->setToolTip("Save what viewers see as a PNG");
+	file->addAction("Open recordings &folder", this, [] {
+		const QString dir = QSettings().value("record/dir", Recorder::defaultDir()).toString();
+		QDir().mkpath(dir);
+		QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+	});
+	file->addSeparator();
 	file->addAction("E&xit", this, &QWidget::close);
+
+	// Window-wide shortcuts; a focused text box still gets its own Ctrl+C / Ctrl+V first.
+	edit->addAction("&Copy source", QKeySequence::Copy, this, &MainWindow::copySource);
+	edit->addAction("&Paste source", QKeySequence::Paste, this, &MainWindow::pasteSource);
+	edit->addAction("&Duplicate source", QKeySequence(Qt::CTRL | Qt::Key_D), this, &MainWindow::duplicateSource);
+	edit->addSeparator();
+	edit->addAction("&Transform...", QKeySequence(Qt::CTRL | Qt::Key_E), this, &MainWindow::transformSelected);
+	edit->addAction("&Fit to screen", QKeySequence(Qt::CTRL | Qt::Key_F), this, [this] {
+		if (obs_sceneitem_t *item = m_preview->selectedItem()) {
+			ObsCore::fitToCanvas(item);
+			obs_sceneitem_release(item);
+			Autosave::touch();
+		}
+	});
+	connect(&m_rec, &Recorder::screenshotSaved, this, [this](const QString &path) {
+		statusBar()->showMessage(path.isEmpty() ? QString("Could not save the screenshot.")
+							: QString("Screenshot saved: %1").arg(QDir::toNativeSeparators(path)),
+					 8000);
+		if (!path.isEmpty())
+			m_clips->add("Screenshot: " + QFileInfo(path).fileName(), path);
+	});
 
 	// Recording / clips / hotkeys
 	connect(&m_rec, &Recorder::recordingStopped, this, [this](const QString &path, const QString &err) {
 		m_recBtn->setText("● Rec");
 		m_recBtn->setChecked(false);
+		m_recBtn->setEnabled(true);
+		syncPauseButton();
 		statusBar()->showMessage(err.isEmpty() ? QString("Recording saved: %1").arg(QDir::toNativeSeparators(path))
 						       : QString("Recording stopped: %1").arg(err), 10000);
 	});
@@ -244,10 +450,8 @@ MainWindow::MainWindow()
 	connect(&m_statsTimer, &QTimer::timeout, this, &MainWindow::updateStats);
 	m_statsTimer.start(1000);
 
-	connect(&m_stream, &MultiStream::destinationState, this, [this](const QString &name, const QString &state) {
-		for (int r = 0; r < m_dests->rowCount(); ++r)
-			if (m_dests->item(r, 1)->text() == name)
-				m_dests->item(r, 4)->setText(state);
+	connect(&m_stream, &MultiStream::destinationState, this, [this](int row, const QString &state) {
+		setDestinationStatus(row, state);
 	});
 
 	// Updates: quietly check shortly after launch, applies on next start.
@@ -262,11 +466,18 @@ MainWindow::MainWindow()
 
 	if (!restoreGeometry(QSettings().value("ui/geometry").toByteArray()))
 		resize(1360, 820);
-	restoreState(QSettings().value("ui/state").toByteArray(), kLayoutVersion); // older layouts are ignored
+	// Older layouts are ignored; a first start (or an outdated layout) gets the default panel sizes.
+	if (!restoreState(QSettings().value("ui/state").toByteArray(), kLayoutVersion))
+		QTimer::singleShot(0, this, [this] { applyDefaultDockSizes(); });
 }
 
 MainWindow::~MainWindow()
 {
+	// After this the window (and what persistAll reads) is gone; libobs keeps running until main() shuts it down.
+	if (Autosave *a = Autosave::instance()) {
+		a->unhookObs();
+		a->setSaver(nullptr);
+	}
 	if (m_cpu)
 		os_cpu_usage_info_destroy(m_cpu);
 }
@@ -281,8 +492,9 @@ void MainWindow::buildToolbar()
 	bar->setIconSize(QSize(22, 22));
 
 	auto *logo = new QLabel;
-	logo->setPixmap(QIcon(":/logo").pixmap(22, 22));
+	logo->setPixmap(QIcon(":/logo").pixmap(28, 28));
 	logo->setContentsMargins(6, 0, 6, 0);
+	logo->setToolTip(QString("RareStudio %1").arg(RARESTUDIO_VERSION));
 	bar->addWidget(logo);
 	bar->addAction("+ Scene", this, &MainWindow::addScene);
 	bar->addAction("+ Source", this, &MainWindow::addSourceDialog);
@@ -304,8 +516,7 @@ void MainWindow::buildToolbar()
 	ms->setSingleStep(50);
 	ms->setSuffix(" ms");
 	ms->setToolTip("Transition length");
-	auto *cfg = new QPushButton("\u2699");
-	cfg->setFixedWidth(34);
+	auto *cfg = new QPushButton("Edit\u2026");
 	cfg->setToolTip("Transitions & stingers: tune, add, set per-scene overrides");
 	bar->addWidget(trans);
 	bar->addWidget(ms);
@@ -326,36 +537,54 @@ void MainWindow::buildToolbar()
 	connect(trans, &QComboBox::currentIndexChanged, this, [trans, ms, syncTransitionUi] {
 		TransitionManager::instance().setCurrent(trans->currentData().toString());
 		syncTransitionUi();
+		Autosave::touch();
 	});
 	connect(ms, &QSpinBox::valueChanged, this, [trans](int v) {
 		TransitionManager::instance().setMs(trans->currentData().toString(), v);
+		Autosave::touch();
 	});
 	connect(cfg, &QPushButton::clicked, this, [this, syncTransitionUi] {
 		TransitionsDialog dlg(this);
 		connect(&dlg, &TransitionsDialog::changed, this, syncTransitionUi);
 		dlg.exec();
 		syncTransitionUi();
-	});	bar->addSeparator();
+		Autosave::touch();
+	});
+	bar->addSeparator();
 
 	// Recording and instant replay ("clip") controls.
 	m_recBtn = new QPushButton("● Rec");
 	m_recBtn->setCheckable(true);
 	m_recBtn->setToolTip("Record to a file");
+	m_pauseBtn = new QPushButton("❚❚");
+	m_pauseBtn->setCheckable(true); // shown only while recording (through its toolbar action, below)
 	m_replayBtn = new QPushButton("Replay");
 	m_replayBtn->setCheckable(true);
 	m_replayBtn->setToolTip("Keep the last seconds in memory so you can save a clip after something happens");
 	m_clipBtn = new QPushButton("Clip!");
 	m_clipBtn->setEnabled(false);
 	m_clipBtn->setToolTip("Save the last seconds as a clip");
-	for (auto *b : {m_recBtn, m_replayBtn, m_clipBtn})
-		bar->addWidget(b);
+	// A toolbar hides a widget through the action addWidget returns, not the widget itself.
+	for (auto *b : {m_recBtn, m_pauseBtn, m_replayBtn, m_clipBtn}) {
+		QAction *a = bar->addWidget(b);
+		if (b == m_pauseBtn) {
+			m_pauseAction = a;
+			a->setVisible(false);
+		}
+	}
 	connect(m_recBtn, &QPushButton::clicked, this, &MainWindow::toggleRecord);
+	connect(m_pauseBtn, &QPushButton::clicked, this, &MainWindow::togglePause);
 	connect(m_replayBtn, &QPushButton::clicked, this, &MainWindow::toggleReplay);
 	connect(m_clipBtn, &QPushButton::clicked, this, &MainWindow::saveClip);
 
 	auto *spacer = new QWidget;
 	spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 	bar->addWidget(spacer);
+
+	m_recChip = new StatusChip("recChip", QColor(0xf8, 0x71, 0x71));
+	m_liveChip = new StatusChip("liveChip", QColor(0xff, 0x4d, 0x6d));
+	bar->addWidget(m_recChip);
+	bar->addWidget(m_liveChip);
 
 	m_stats = new QLabel;
 	m_stats->setObjectName("stats");
@@ -381,13 +610,20 @@ void MainWindow::updateStats()
 			       .arg(ramMb, 0, 'f', 0)
 			       .arg(obs_get_active_fps(), 0, 'f', 1);
 
-	if (m_rec.recording()) {
-		const qint64 t = m_rec.recordingSeconds();
-		text = QString("● REC %1:%2:%3   ")
-			       .arg(t / 3600, 2, 10, QChar('0'))
-			       .arg(t / 60 % 60, 2, 10, QChar('0'))
-			       .arg(t % 60, 2, 10, QChar('0')) + text;
-	}
+	auto clock = [](qint64 t) {
+		return QString("%1:%2:%3")
+			.arg(t / 3600, 2, 10, QChar('0'))
+			.arg(t / 60 % 60, 2, 10, QChar('0'))
+			.arg(t % 60, 2, 10, QChar('0'));
+	};
+	m_recChip->setActive(m_rec.recording());
+	if (m_rec.recording())
+		m_recChip->setText((m_rec.paused() ? "PAUSED  " : "REC  ") + clock(m_rec.recordingSeconds()));
+	syncPauseButton(); // going live or arming replay changes whether pausing is possible
+	m_liveChip->setActive(m_stream.live());
+	if (m_stream.live())
+		m_liveChip->setText("LIVE  " + clock((QDateTime::currentMSecsSinceEpoch() - m_liveSinceMs) / 1000));
+
 	if (m_stream.live()) {
 		const MultiStream::Stats s = m_stream.stats();
 		const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -405,9 +641,23 @@ void MainWindow::updateStats()
 void MainWindow::openSettings()
 {
 	persistAll(); // settings changes touch the video/audio engine; never risk losing state to a crash there
-	if (SettingsDialog(this).exec() == QDialog::Accepted) {
-		m_hotkeys->reload();
-		persistAll();
+	const double scaleBefore = UiBits::scaleFactor();
+	if (SettingsDialog(this).exec() != QDialog::Accepted)
+		return;
+	m_hotkeys->reload();
+	UiBits::installEffects(*qApp); // animations on/off
+	persistAll();
+
+	if (std::abs(UiBits::scaleFactor() - scaleBefore) < 0.01)
+		return;
+	if (m_stream.live() || m_rec.recording()) {
+		statusBar()->showMessage("The new interface size applies the next time you start RareStudio.", 10000);
+		return;
+	}
+	if (QMessageBox::question(this, "RareStudio", "Restart RareStudio now to apply the new interface size?") ==
+	    QMessageBox::Yes) {
+		m_restarting = true;
+		close();
 	}
 }
 
@@ -417,6 +667,9 @@ void MainWindow::toggleRecord()
 {
 	if (m_rec.recording()) {
 		m_rec.stopRecording();
+		// The muxer still has to finish the file; recordingStopped re-enables the button.
+		m_recBtn->setText("Stopping…");
+		m_recBtn->setEnabled(false);
 		return;
 	}
 	QString err;
@@ -427,6 +680,43 @@ void MainWindow::toggleRecord()
 	}
 	m_recBtn->setChecked(true);
 	m_recBtn->setText("■ Stop");
+	syncPauseButton();
+}
+
+void MainWindow::togglePause()
+{
+	if (!m_rec.recording())
+		return;
+	const bool want = !m_rec.paused();
+	if (want && !m_pauseBtn->isEnabled()) {
+		statusBar()->showMessage("Pause works when only recording: streaming and the replay buffer share its encoder.", 8000);
+		return;
+	}
+	if (!m_rec.setPaused(want))
+		statusBar()->showMessage("Could not pause the recording right now; try again in a moment.", 6000);
+	syncPauseButton();
+	updateStats();
+}
+
+void MainWindow::syncPauseButton()
+{
+	const bool rec = m_rec.recording();
+	// Paused encoders are shared encoders: never leave them paused under a stream or the replay buffer.
+	const bool shared = m_stream.live() || m_rec.replayActive();
+	if (shared && m_rec.paused())
+		m_rec.setPaused(false);
+	m_pauseAction->setVisible(rec);
+	m_pauseBtn->setEnabled(!shared);
+	QSignalBlocker b(m_pauseBtn);
+	m_pauseBtn->setChecked(m_rec.paused());
+	m_pauseBtn->setText(m_rec.paused() ? "▶ Resume" : "❚❚");
+	m_pauseBtn->setToolTip(shared ? "Pause is only available while recording alone (not while live or with the replay buffer armed)"
+				      : m_rec.paused() ? "Resume recording" : "Pause recording");
+}
+
+void MainWindow::takeScreenshot()
+{
+	m_rec.screenshot();
 }
 
 void MainWindow::setReplayUi(bool armed)
@@ -450,6 +740,7 @@ void MainWindow::toggleReplay()
 	QSettings s;
 	const bool wantShort = s.value("clips/short", false).toBool();
 	const bool wantLocal = s.value("clips/local", true).toBool() || !wantShort; // never arm nothing
+	m_rec.setPaused(false); // the replay buffer shares the recording's encoder
 	QString err;
 	if (wantLocal && !m_rec.startReplay(&err)) {
 		setReplayUi(false);
@@ -533,12 +824,17 @@ void MainWindow::uploadShort(int panelId, const QString &path)
 
 void MainWindow::upsertDestination(const QString &name, const QString &server, const QString &key)
 {
+	if (m_stream.live())
+		return; // rows must not change under a running stream; the next refresh catches up
 	for (int r = 0; r < m_dests->rowCount(); ++r) {
-		if (m_dests->item(r, 1)->text() != name)
+		QTableWidgetItem *nm = m_dests->item(r, 1), *k = m_dests->item(r, 2);
+		if (!nm || !k || nm->text() != name)
 			continue;
-		m_dests->item(r, 2)->setText(server);
-		m_dests->item(r, 3)->setData(Qt::UserRole, key);
-		m_dests->item(r, 3)->setText(QString(key.size(), QChar(0x2022)));
+		QSignalBlocker block(m_dests);
+		nm->setData(Qt::UserRole, server);
+		nm->setToolTip(server);
+		k->setData(Qt::UserRole, key);
+		refreshDestinationRow(r);
 		saveDestinations();
 		return;
 	}
@@ -577,6 +873,8 @@ void MainWindow::onHotkey(int action)
 	case HotkeyManager::ToggleRecord: toggleRecord(); break;
 	case HotkeyManager::ToggleReplay: toggleReplay(); break;
 	case HotkeyManager::SaveClip: saveClip(); break;
+	case HotkeyManager::PauseRecord: togglePause(); break;
+	case HotkeyManager::Screenshot: takeScreenshot(); break;
 	case HotkeyManager::MuteMic:
 		if (obs_source_t *mic = ObsCore::instance().micAudio())
 			obs_source_set_muted(mic, !obs_source_muted(mic));
@@ -607,8 +905,10 @@ void MainWindow::closeEvent(QCloseEvent *e)
 	m_stream.stop();
 	m_rec.shutdown();
 	m_vertical.stop();
-	m_dests->setCurrentItem(nullptr); // commits a key that is still being typed
 	persistAll();
+	QSettings().setValue("session/running", false); // a clean exit: no "restored from autosave" next time
+	if (m_restarting)
+		qApp->setProperty("rsRestart", true); // main() relaunches once libobs has shut down
 	QMainWindow::closeEvent(e);
 }
 
@@ -622,7 +922,20 @@ void MainWindow::persistAll() const
 	obs_data_t *out = obs_data_create();
 	obs_data_array_t *arr = obs_save_sources();
 	obs_data_set_array(out, "sources", arr);
+	// libobs keeps sources newest-first, so the scene list order is saved separately.
+	obs_data_array_t *order = obs_data_array_create();
+	for (int i = 0; i < m_scenes->count(); ++i) {
+		obs_data_t *it = obs_data_create();
+		obs_data_set_string(it, "name", m_scenes->item(i)->text().toUtf8().constData());
+		obs_data_array_push_back(order, it);
+		obs_data_release(it);
+	}
+	obs_data_set_array(out, "scene_order", order);
+	if (const QListWidgetItem *cur = m_scenes->currentItem())
+		obs_data_set_string(out, "current_scene", cur->text().toUtf8().constData());
+	// Written to scenes.json.tmp then swapped in, keeping the previous file as .bak: never half a file.
 	obs_data_save_json_safe(out, scenesFile().toUtf8().constData(), "tmp", "bak");
+	obs_data_array_release(order);
 	obs_data_array_release(arr);
 	obs_data_release(out);
 
@@ -630,6 +943,21 @@ void MainWindow::persistAll() const
 	s.setValue("ui/geometry", saveGeometry());
 	s.setValue("ui/state", saveState(kLayoutVersion));
 	s.sync();
+}
+
+// The preview is what you look at all day: keep the side panels to a sensible width and the mixer
+// from eating half the window.
+void MainWindow::applyDefaultDockSizes()
+{
+	auto *scenes = findChild<QDockWidget *>("scenes");
+	auto *stream = findChild<QDockWidget *>("stream");
+	auto *mixer = findChild<QDockWidget *>("mixer");
+	if (scenes && stream)
+		resizeDocks({scenes, stream}, {280, 380}, Qt::Horizontal);
+	if (mixer)
+		resizeDocks({mixer}, {240}, Qt::Vertical);
+	if (stream)
+		stream->raise();
 }
 
 void MainWindow::changeEvent(QEvent *e)
@@ -645,27 +973,35 @@ void MainWindow::changeEvent(QEvent *e)
 
 // ---- Scenes ---------------------------------------------------------------------------------
 
-void MainWindow::buildScenesDock()
+void MainWindow::buildScenesDock(const QStringList &order)
 {
 	auto *dock = new QDockWidget("Scenes", this);
 	dock->setObjectName("scenes");
 	auto *w = new QWidget;
 	auto *lay = new QVBoxLayout(w);
+	lay->setContentsMargins(10, 10, 10, 10);
+	lay->setSpacing(8);
 	m_scenes = new QListWidget;
 	lay->addWidget(m_scenes);
-	auto *add = new QPushButton("Add Scene");
+	auto *add = new QPushButton("+  Add Scene");
 	lay->addWidget(add);
 	dock->setWidget(w);
 	addDockWidget(Qt::LeftDockWidgetArea, dock);
 
+	QStringList names;
 	obs_enum_scenes(
 		[](void *p, obs_source_t *src) {
-			auto *list = static_cast<QListWidget *>(p);
-			list->addItem(QString::fromUtf8(obs_source_get_name(src)));
+			static_cast<QStringList *>(p)->append(QString::fromUtf8(obs_source_get_name(src)));
 			ObsCore::instance().holdScene(src);
 			return true;
 		},
-		m_scenes);
+		&names);
+	// Saved order first; anything not in it (older save files) keeps libobs' order after them.
+	std::stable_sort(names.begin(), names.end(), [&order](const QString &a, const QString &b) {
+		const qsizetype ia = order.indexOf(a), ib = order.indexOf(b);
+		return (ia < 0 ? INT_MAX : ia) < (ib < 0 ? INT_MAX : ib);
+	});
+	m_scenes->addItems(names);
 
 	m_scenes->setContextMenuPolicy(Qt::CustomContextMenu);
 	connect(m_scenes, &QListWidget::customContextMenuRequested, this,
@@ -681,6 +1017,7 @@ void MainWindow::buildScenesDock()
 		ObsCore::instance().setCurrentScene(obs_scene_from_source(src));
 		obs_source_release(src); // output channel 0 holds its own reference
 		refreshSources();
+		Autosave::touch(); // reopen on the scene you were on
 	});
 }
 
@@ -691,11 +1028,16 @@ void MainWindow::addScene()
 									       QString("Scene %1").arg(m_scenes->count() + 1), &ok);
 	if (!ok || name.isEmpty())
 		return;
+	if (nameTaken(name)) {
+		QMessageBox::warning(this, "RareStudio", "Something with that name already exists.");
+		return;
+	}
 	obs_scene_t *scene = ObsCore::instance().createScene(name);
 	if (!scene)
 		return;
 	m_scenes->addItem(name);
 	m_scenes->setCurrentRow(m_scenes->count() - 1);
+	Autosave::touch();
 }
 
 // ---- Sources --------------------------------------------------------------------------------
@@ -706,45 +1048,70 @@ void MainWindow::buildSourcesDock()
 	dock->setObjectName("sources");
 	auto *w = new QWidget;
 	auto *lay = new QVBoxLayout(w);
+	lay->setContentsMargins(10, 10, 10, 10);
+	lay->setSpacing(8);
 	m_sources = new QListWidget;
-	lay->addWidget(m_sources);
+	lay->addWidget(m_sources, 1);
+	m_sourcesEmpty = new QLabel("No sources in this scene yet.\nPress + to add a capture, camera, media or text.");
+	m_sourcesEmpty->setObjectName("empty");
+	m_sourcesEmpty->setAlignment(Qt::AlignCenter);
+	m_sourcesEmpty->setWordWrap(true);
+	lay->addWidget(m_sourcesEmpty);
 	auto *row = new QHBoxLayout;
-	auto *add = new QPushButton("+");
-	auto *props = new QPushButton("Properties");
-	auto *xform = new QPushButton("Transform");
-	auto *up = new QPushButton("▲");
-	auto *down = new QPushButton("▼");
-	auto *rem = new QPushButton("✕");
-	add->setToolTip("Add source");
-	up->setToolTip("Bring forward");
-	down->setToolTip("Send backward");
-	rem->setToolTip("Remove source");
-	for (auto *b : {add, up, down, rem})
-		b->setFixedWidth(34);
-	for (auto *b : {add, props, xform, up, down, rem})
+	row->setSpacing(4);
+	auto tool = [](const QString &text, const QString &tip) {
+		auto *b = new QToolButton;
+		b->setObjectName("dockTool");
+		b->setText(text);
+		b->setToolTip(tip);
+		b->setCursor(Qt::PointingHandCursor);
+		return b;
+	};
+	auto *add = tool("+", "Add source");
+	auto *rem = tool("−", "Remove source (Delete)");
+	auto *up = tool("▲", "Bring forward");
+	auto *down = tool("▼", "Send backward");
+	auto *props = tool("Properties", "Edit the selected source (double-click works too)");
+	auto *filt = tool("Filters", "Filters on the selected source");
+	auto *xform = tool("Transform", "Position, size, crop");
+	for (auto *b : {add, rem, up, down})
 		row->addWidget(b);
+	row->addStretch();
 	lay->addLayout(row);
+	auto *edits = new QHBoxLayout; // own row, so the labels never get squeezed into "..."
+	edits->setSpacing(4);
+	for (auto *b : {props, filt, xform}) {
+		b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		edits->addWidget(b);
+	}
+	lay->addLayout(edits);
 	dock->setWidget(w);
 	addDockWidget(Qt::LeftDockWidgetArea, dock);
+	connect(filt, &QToolButton::clicked, this, &MainWindow::filtersSelected);
+	m_itemButtons = {rem, up, down, props, filt, xform};
+	connect(m_preview, &PreviewWidget::selectionChanged, this, &MainWindow::updateItemButtons);
 
 	m_sources->setContextMenuPolicy(Qt::CustomContextMenu);
 	connect(m_sources, &QListWidget::customContextMenuRequested, this,
 		[this](const QPoint &p) { showItemMenu(m_sources->viewport()->mapToGlobal(p)); });
-	connect(m_sources, &QListWidget::currentTextChanged, this,
-		[this](const QString &name) { m_preview->selectByName(name); });
-	connect(add, &QPushButton::clicked, this, &MainWindow::addSourceDialog);
-	connect(props, &QPushButton::clicked, this, &MainWindow::editSelectedSource);
-	connect(xform, &QPushButton::clicked, this, &MainWindow::transformSelected);
-	connect(up, &QPushButton::clicked, this, [this] { moveSelected(OBS_ORDER_MOVE_UP); });
-	connect(down, &QPushButton::clicked, this, [this] { moveSelected(OBS_ORDER_MOVE_DOWN); });
+	connect(m_sources, &QListWidget::currentTextChanged, this, [this](const QString &name) {
+		m_preview->selectByName(name);
+		updateItemButtons();
+	});
+	connect(add, &QToolButton::clicked, this, &MainWindow::addSourceDialog);
+	connect(props, &QToolButton::clicked, this, &MainWindow::editSelectedSource);
+	connect(xform, &QToolButton::clicked, this, &MainWindow::transformSelected);
+	connect(up, &QToolButton::clicked, this, [this] { moveSelected(OBS_ORDER_MOVE_UP); });
+	connect(down, &QToolButton::clicked, this, [this] { moveSelected(OBS_ORDER_MOVE_DOWN); });
 	connect(m_sources, &QListWidget::itemDoubleClicked, this, &MainWindow::editSelectedSource);
-	connect(rem, &QPushButton::clicked, this, &MainWindow::removeSelectedSource);
-	connect(m_sources, &QListWidget::itemChanged, this, [this](QListWidgetItem *it) {
+	connect(rem, &QToolButton::clicked, this, &MainWindow::removeSelectedSource);
+	connect(m_sources, &QListWidget::itemChanged, this, [](QListWidgetItem *it) {
 		obs_scene_t *scene = ObsCore::instance().currentScene();
 		if (!scene)
 			return;
 		if (obs_sceneitem_t *si = obs_scene_find_source(scene, it->text().toUtf8().constData()))
 			obs_sceneitem_set_visible(si, it->checkState() == Qt::Checked);
+		Autosave::touch();
 	});
 }
 
@@ -753,6 +1120,10 @@ void MainWindow::refreshSources()
 	QSignalBlocker block(m_sources);
 	m_sources->clear();
 	obs_scene_t *scene = ObsCore::instance().currentScene();
+	auto showEmpty = qScopeGuard([this] {
+		m_sourcesEmpty->setVisible(m_sources->count() == 0);
+		updateItemButtons();
+	});
 	if (!scene)
 		return;
 	obs_scene_enum_items(
@@ -768,33 +1139,147 @@ void MainWindow::refreshSources()
 		m_sources);
 }
 
-void MainWindow::addSourceDialog()
+void MainWindow::updateItemButtons()
 {
-	QStringList labels;
-	QList<const char *> ids;
-	for (const auto &t : kSourceTypes) {
-		if (const char *dn = obs_source_get_display_name(t.id)) {
-			labels << QString::fromUtf8(dn);
-			ids << t.id;
+	const bool any = !m_preview->selectedName().isEmpty();
+	for (QWidget *b : m_itemButtons)
+		b->setEnabled(any);
+}
+
+void MainWindow::copySource()
+{
+	obs_sceneitem_t *item = m_preview->selectedItem();
+	if (!item)
+		return;
+	m_copied.source = QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(item)));
+	obs_sceneitem_get_info2(item, &m_copied.transform);
+	obs_sceneitem_get_crop(item, &m_copied.crop);
+	m_copied.visible = obs_sceneitem_visible(item);
+	obs_sceneitem_release(item);
+	statusBar()->showMessage(QString("Copied \"%1\". Paste it into any scene with Ctrl+V.").arg(m_copied.source), 5000);
+}
+
+void MainWindow::pasteSource()
+{
+	if (m_copied.source.isEmpty())
+		return;
+	obs_source_t *src = obs_get_source_by_name(m_copied.source.toUtf8().constData());
+	if (!src) {
+		statusBar()->showMessage(QString("\"%1\" no longer exists.").arg(m_copied.source), 5000);
+		return;
+	}
+	obs_scene_t *scene = ObsCore::instance().currentScene();
+	// The source list finds items by name, so a scene shows each source at most once: paste a copy then.
+	placeSource(src, scene && obs_scene_find_source(scene, m_copied.source.toUtf8().constData()));
+	obs_source_release(src);
+}
+
+void MainWindow::duplicateSource()
+{
+	obs_sceneitem_t *item = m_preview->selectedItem();
+	if (!item)
+		return;
+	const CopiedItem keep = m_copied; // duplicating doesn't overwrite what you copied
+	m_copied.source = QString::fromUtf8(obs_source_get_name(obs_sceneitem_get_source(item)));
+	obs_sceneitem_get_info2(item, &m_copied.transform);
+	obs_sceneitem_get_crop(item, &m_copied.crop);
+	m_copied.visible = obs_sceneitem_visible(item);
+	placeSource(obs_sceneitem_get_source(item), true);
+	obs_sceneitem_release(item);
+	m_copied = keep;
+}
+
+void MainWindow::placeSource(obs_source_t *src, bool duplicate)
+{
+	obs_scene_t *scene = ObsCore::instance().currentScene();
+	if (!scene || !src)
+		return;
+	// Scenes can't be pasted into themselves (libobs refuses, and a loop would never render).
+	if (obs_scene_get_source(scene) == src)
+		return;
+	obs_source_t *put = src;
+	if (duplicate) {
+		// A full copy, filters included, under a fresh name.
+		put = obs_source_duplicate(src, uniqueName(QString::fromUtf8(obs_source_get_name(src))).toUtf8().constData(), false);
+		if (!put) {
+			statusBar()->showMessage("That source can't be duplicated.", 5000);
+			return;
 		}
 	}
-	bool ok = false;
-	const QString label = QInputDialog::getItem(this, "Add Source", "Type:", labels, 0, false, &ok);
-	if (!ok)
-		return;
-	const int idx = labels.indexOf(label);
-
-	const QString name = QInputDialog::getText(this, "Add Source", "Name:", QLineEdit::Normal, label, &ok);
-	if (!ok || name.isEmpty())
-		return;
-
-	if (obs_source_t *src = ObsCore::instance().addSource(ids[idx], name)) {
+	if (obs_sceneitem_t *item = obs_scene_add(scene, put)) {
+		obs_sceneitem_set_info2(item, &m_copied.transform);
+		obs_sceneitem_set_crop(item, &m_copied.crop);
+		obs_sceneitem_set_visible(item, m_copied.visible);
+		const QString name = QString::fromUtf8(obs_source_get_name(put));
 		refreshSources();
 		selectInList(name);
 		m_preview->selectByName(name);
-		PropertiesDialog dlg(src, this);
-		dlg.exec();
+		Autosave::touch();
+	}
+	if (duplicate)
+		obs_source_release(put);
+}
+
+void MainWindow::addSourceDialog()
+{
+	if (!ObsCore::instance().currentScene())
+		return;
+
+	QDialog dlg(this);
+	dlg.setWindowTitle("Add source");
+	dlg.resize(460, 480);
+	auto *types = new QListWidget;
+	types->setObjectName("typeList");
+	for (const auto &t : kSourceTypes) {
+		const char *dn = obs_source_get_display_name(t.id);
+		if (!dn)
+			continue; // plugin not available on this machine
+		auto *it = new QListWidgetItem(QString::fromUtf8(dn) + "\n" + QString::fromUtf8(t.blurb));
+		it->setData(Qt::UserRole, QByteArray(t.id));
+		it->setData(Qt::UserRole + 1, QString::fromUtf8(dn));
+		types->addItem(it);
+	}
+	types->setCurrentRow(0);
+	auto *name = new QLineEdit;
+	auto *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+	box->button(QDialogButtonBox::Ok)->setText("Add");
+	auto *form = new QFormLayout;
+	form->addRow("Name", name);
+	auto *lay = new QVBoxLayout(&dlg);
+	lay->setContentsMargins(16, 16, 16, 12);
+	lay->setSpacing(12);
+	lay->addWidget(types, 1);
+	lay->addLayout(form);
+	lay->addWidget(box);
+
+	// The name follows the type until you type your own.
+	bool customName = false;
+	auto suggest = [&] {
+		if (!customName && types->currentItem())
+			name->setText(uniqueName(types->currentItem()->data(Qt::UserRole + 1).toString()));
+	};
+	suggest();
+	connect(name, &QLineEdit::textEdited, &dlg, [&] { customName = true; });
+	connect(types, &QListWidget::currentRowChanged, &dlg, suggest);
+	connect(types, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
+	connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	if (dlg.exec() != QDialog::Accepted || !types->currentItem())
+		return;
+
+	const QByteArray id = types->currentItem()->data(Qt::UserRole).toByteArray();
+	const QString wanted = name->text().trimmed();
+	const QString finalName = uniqueName(wanted.isEmpty() ? types->currentItem()->data(Qt::UserRole + 1).toString() : wanted);
+
+	if (obs_source_t *src = ObsCore::instance().addSource(id.constData(), finalName)) {
+		refreshSources();
+		selectInList(finalName);
+		m_preview->selectByName(finalName);
+		Autosave::touch(); // it exists now, so it is saved now, whatever happens in the dialog
+		PropertiesDialog dlg2(src, this);
+		dlg2.exec();
 		obs_source_release(src);
+		Autosave::touch();
 	} else {
 		QMessageBox::warning(this, "RareStudio", "Could not create that source.");
 	}
@@ -809,6 +1294,7 @@ void MainWindow::editSelectedSource()
 		PropertiesDialog dlg(src, this);
 		dlg.exec();
 		obs_source_release(src);
+		Autosave::touch();
 	}
 }
 
@@ -823,6 +1309,7 @@ void MainWindow::removeSelectedSource()
 		obs_sceneitem_remove(si);
 	}
 	refreshSources();
+	Autosave::touch();
 }
 
 void MainWindow::selectInList(const QString &name)
@@ -843,6 +1330,7 @@ void MainWindow::filtersSelected()
 	if (obs_sceneitem_t *item = m_preview->selectedItem()) {
 		FiltersDialog(obs_sceneitem_get_source(item), this).exec();
 		obs_sceneitem_release(item);
+		Autosave::touch();
 	}
 }
 
@@ -851,6 +1339,7 @@ void MainWindow::transformSelected()
 	if (obs_sceneitem_t *item = m_preview->selectedItem()) {
 		TransformDialog(item, this).exec();
 		obs_sceneitem_release(item);
+		Autosave::touch();
 	}
 }
 
@@ -864,14 +1353,20 @@ void MainWindow::moveSelected(obs_order_movement dir)
 	obs_sceneitem_release(item);
 	refreshSources();
 	selectInList(name);
+	Autosave::touch();
 }
 
 void MainWindow::showItemMenu(const QPoint &globalPos)
 {
 	obs_sceneitem_t *item = m_preview->selectedItem();
 	QMenu menu(this);
+	auto addPaste = [&] {
+		QAction *paste = menu.addAction("Paste", QKeySequence::Paste, this, &MainWindow::pasteSource);
+		paste->setEnabled(!m_copied.source.isEmpty());
+	};
 	if (!item) {
 		menu.addAction("Add source...", this, &MainWindow::addSourceDialog);
+		addPaste();
 		menu.exec(globalPos);
 		return;
 	}
@@ -879,6 +1374,11 @@ void MainWindow::showItemMenu(const QPoint &globalPos)
 	menu.addAction("Properties...", this, &MainWindow::editSelectedSource);
 	menu.addAction("Filters...", this, &MainWindow::filtersSelected);
 	menu.addAction("Rename...", this, &MainWindow::renameSource);
+	menu.addSeparator();
+	menu.addAction("Copy", QKeySequence::Copy, this, &MainWindow::copySource);
+	addPaste();
+	menu.addAction("Duplicate", QKeySequence(Qt::CTRL | Qt::Key_D), this, &MainWindow::duplicateSource);
+	menu.addSeparator();
 	menu.addAction(obs_sceneitem_locked(item) ? "Unlock" : "Lock position", this, &MainWindow::toggleLockSelected);
 	menu.addAction("Transform...", this, &MainWindow::transformSelected);
 	menu.addSeparator();
@@ -900,6 +1400,7 @@ void MainWindow::showItemMenu(const QPoint &globalPos)
 	menu.addAction("Remove", this, &MainWindow::removeSelectedSource);
 	menu.exec(globalPos);
 	obs_sceneitem_release(item);
+	Autosave::touch(); // fit, center, reset...
 }
 
 // ---- Audio ----------------------------------------------------------------------------------
@@ -916,8 +1417,14 @@ void MainWindow::buildMixerDock()
 	core.setupDefaultAudio();
 	m_mixer->addStrip("Desktop Audio", core.desktopAudio());
 	m_mixer->addStrip("Mic", core.micAudio());
-	connect(m_mixer, &MixerPanel::filtersRequested, this, [this](obs_source_t *src) { FiltersDialog(src, this).exec(); });
-	connect(m_mixer, &MixerPanel::propertiesRequested, this, [this](obs_source_t *src) { PropertiesDialog(src, this).exec(); });
+	connect(m_mixer, &MixerPanel::filtersRequested, this, [this](obs_source_t *src) {
+		FiltersDialog(src, this).exec();
+		Autosave::touch();
+	});
+	connect(m_mixer, &MixerPanel::propertiesRequested, this, [this](obs_source_t *src) {
+		PropertiesDialog(src, this).exec();
+		Autosave::touch();
+	});
 }
 
 // ---- Streaming ------------------------------------------------------------------------------
@@ -928,98 +1435,175 @@ void MainWindow::buildStreamDock()
 	dock->setObjectName("stream");
 	auto *w = new QWidget;
 	auto *lay = new QVBoxLayout(w);
+	lay->setContentsMargins(10, 10, 10, 10);
+	lay->setSpacing(8);
 
-	m_dests = new QTableWidget(0, 5);
-	m_dests->setHorizontalHeaderLabels({"On", "Platform", "Server", "Stream key", "Status"});
-	m_dests->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-	m_dests->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+	// Rows are read-only: the On box is ticked in place, everything else opens the destination dialog
+	// (no half-typed key sitting in a cell editor when something crashes).
+	m_dests = new QTableWidget(0, 4);
+	m_dests->setHorizontalHeaderLabels({"On", "Platform", "Key", "Status"});
+	QHeaderView *hh = m_dests->horizontalHeader();
+	hh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+	hh->setSectionResizeMode(1, QHeaderView::Stretch);
+	hh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+	hh->setSectionResizeMode(3, QHeaderView::Stretch);
+	hh->setHighlightSections(false);
 	m_dests->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	m_dests->setWordWrap(false);
 	m_dests->setSelectionBehavior(QAbstractItemView::SelectRows);
+	m_dests->setSelectionMode(QAbstractItemView::SingleSelection);
+	m_dests->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	m_dests->setShowGrid(false);
 	m_dests->verticalHeader()->hide();
-	lay->addWidget(m_dests);
+	m_dests->verticalHeader()->setDefaultSectionSize(34);
+	m_dests->setToolTip("Double-click a destination to edit its server or stream key");
+	lay->addWidget(m_dests, 1);
+	m_destsEmpty = new QLabel("No destinations yet.\nAdd Twitch, YouTube, Kick, TikTok or any RTMP server:\n"
+				  "they all go live together from one encode.");
+	m_destsEmpty->setObjectName("empty");
+	m_destsEmpty->setAlignment(Qt::AlignCenter);
+	m_destsEmpty->setWordWrap(true);
+	(new QVBoxLayout(m_dests->viewport()))->addWidget(m_destsEmpty);
+	auto syncEmpty = [this] { m_destsEmpty->setVisible(m_dests->rowCount() == 0); };
+	connect(m_dests->model(), &QAbstractItemModel::rowsInserted, this, syncEmpty);
+	connect(m_dests->model(), &QAbstractItemModel::rowsRemoved, this, syncEmpty);
 
 	auto *row = new QHBoxLayout;
-	auto *preset = new QComboBox;
-	for (const Preset &p : kPresets)
-		preset->addItem(p.name);
-	auto *add = new QPushButton("Add destination");
-	auto *rem = new QPushButton("Remove");
-	row->addWidget(preset);
+	row->setSpacing(6);
+	auto *add = new QPushButton("+  Add destination");
+	add->setObjectName("accent");
+	auto *edit = new QPushButton("Edit");
+	m_destRemove = new QPushButton("Remove");
 	row->addWidget(add);
-	row->addWidget(rem);
+	row->addStretch();
+	row->addWidget(edit);
+	row->addWidget(m_destRemove);
 	lay->addLayout(row);
 
-	auto *settingsHint = new QLabel("Encoder, bitrate and recording options: File > Settings > Output");
+	auto *settingsHint = new QLabel("Streaming only needs each platform's stream key: no sign-in or API keys. "
+					"Encoder and bitrate: File > Settings > Output.");
+	settingsHint->setObjectName("hint");
 	settingsHint->setWordWrap(true);
-	settingsHint->setStyleSheet("color: #9a9ab0;");
 	lay->addWidget(settingsHint);
-
-	// Stream keys are typed masked and committed as soon as editing finishes.
-	struct KeyDelegate : QStyledItemDelegate {
-		using QStyledItemDelegate::QStyledItemDelegate;
-		QWidget *createEditor(QWidget *parent, const QStyleOptionViewItem &, const QModelIndex &) const override
-		{
-			auto *e = new QLineEdit(parent);
-			e->setEchoMode(QLineEdit::Password);
-			return e;
-		}
-		void setEditorData(QWidget *, const QModelIndex &) const override {} // never show the stored key
-		void setModelData(QWidget *editor, QAbstractItemModel *model, const QModelIndex &index) const override
-		{
-			const QString typed = static_cast<QLineEdit *>(editor)->text();
-			if (typed.isEmpty())
-				return; // keep the existing key
-			model->setData(index, typed, Qt::UserRole);
-			model->setData(index, QString(typed.size(), QChar(0x2022)), Qt::DisplayRole);
-		}
-	};
-	m_dests->setItemDelegateForColumn(3, new KeyDelegate(m_dests));
 
 	dock->setWidget(w);
 	addDockWidget(Qt::RightDockWidgetArea, dock);
 
-	connect(add, &QPushButton::clicked, this, [this, preset] {
-		const Preset &p = kPresets[preset->currentIndex()];
-		addDestination(p.name, p.server, "", true);
+	connect(add, &QPushButton::clicked, this, [this] {
+		Destination d;
+		if (!editDestinationDialog(this, d, true))
+			return;
+		addDestination(d.name, d.server, d.key, true);
+		m_dests->selectRow(m_dests->rowCount() - 1);
+		saveDestinations();
 	});
-	connect(rem, &QPushButton::clicked, this, [this] {
-		if (m_dests->currentRow() >= 0)
-			m_dests->removeRow(m_dests->currentRow());
+	connect(edit, &QPushButton::clicked, this, [this] { editDestination(m_dests->currentRow()); });
+	auto syncButtons = [this, edit] {
+		const bool picked = !m_dests->selectionModel()->selectedRows().isEmpty();
+		edit->setEnabled(picked);
+		m_destRemove->setEnabled(picked && !m_stream.live());
+	};
+	connect(m_dests, &QTableWidget::itemSelectionChanged, this, syncButtons);
+	syncButtons();
+	connect(m_dests, &QTableWidget::cellDoubleClicked, this, [this](int r, int col) {
+		if (col != 0)
+			editDestination(r);
+	});
+	connect(m_destRemove, &QPushButton::clicked, this, [this] {
+		const int r = m_dests->currentRow();
+		if (r < 0 || m_stream.live())
+			return;
+		const QTableWidgetItem *nameItem = m_dests->item(r, 1);
+		if (QMessageBox::question(this, "RareStudio",
+					  QString("Remove the destination \"%1\"?").arg(nameItem ? nameItem->text() : QString())) !=
+		    QMessageBox::Yes)
+			return;
+		m_dests->removeRow(r);
+		saveDestinations();
 	});
 	loadDestinations();
 }
 
 void MainWindow::addDestination(const QString &name, const QString &server, const QString &key, bool enabled)
 {
+	// Fill the whole row before anyone hears about it: itemChanged on the first cell used to save a
+	// row whose other cells didn't exist yet (null item -> crash when adding a destination).
+	QSignalBlocker block(m_dests);
 	const int r = m_dests->rowCount();
 	m_dests->insertRow(r);
 	auto *on = new QTableWidgetItem;
 	on->setCheckState(enabled ? Qt::Checked : Qt::Unchecked);
 	on->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
 	m_dests->setItem(r, 0, on);
-	m_dests->setItem(r, 1, new QTableWidgetItem(name));
-	m_dests->setItem(r, 2, new QTableWidgetItem(server));
-	auto *k = new QTableWidgetItem(QString(key.size(), QChar(0x2022)));
-	k->setData(Qt::UserRole, key); // real key lives in item data; the cell only shows dots
-	k->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
-	m_dests->setItem(r, 3, k);
-	auto *st = new QTableWidgetItem("offline");
-	st->setFlags(Qt::ItemIsEnabled);
-	m_dests->setItem(r, 4, st);
-	if (key.isEmpty())
-		m_dests->editItem(m_dests->item(r, 3));
+	auto *nm = new QTableWidgetItem(name);
+	nm->setData(Qt::UserRole, server);
+	nm->setToolTip(server);
+	m_dests->setItem(r, 1, nm);
+	auto *k = new QTableWidgetItem;
+	k->setData(Qt::UserRole, key); // the real key lives in item data and is never displayed
+	m_dests->setItem(r, 2, k);
+	m_dests->setItem(r, 3, new QTableWidgetItem("offline"));
+	refreshDestinationRow(r);
+}
+
+void MainWindow::refreshDestinationRow(int r)
+{
+	QTableWidgetItem *k = m_dests->item(r, 2);
+	if (!k)
+		return;
+	const bool hasKey = !k->data(Qt::UserRole).toString().isEmpty();
+	k->setText(hasKey ? QString(8, QChar(0x2022)) : "missing");
+	k->setForeground(hasKey ? QColor(0x9a, 0x9a, 0xb0) : QColor(0xf5, 0x9e, 0x0b));
+}
+
+void MainWindow::setDestinationStatus(int r, const QString &state)
+{
+	QTableWidgetItem *st = m_dests->item(r, 3);
+	if (!st)
+		return;
+	st->setText(state);
+	st->setToolTip(state);
+	const QColor c = state == "live"                                         ? QColor(0x4a, 0xde, 0x80)
+			 : state.startsWith("error") || state.startsWith("could") ? QColor(0xf8, 0x71, 0x71)
+			 : state == "offline"                                     ? QColor(0x8a, 0x8a, 0xa0)
+										  : QColor(0xfb, 0xbf, 0x24);
+	st->setForeground(c);
+}
+
+void MainWindow::editDestination(int r)
+{
+	if (r < 0 || r >= m_dests->rowCount() || !m_dests->item(r, 1) || !m_dests->item(r, 2))
+		return;
+	if (m_stream.live()) {
+		statusBar()->showMessage("Stop streaming to change a destination.", 6000);
+		return;
+	}
+	Destination d = destinations().value(r);
+	if (!editDestinationDialog(this, d, false))
+		return;
+	{
+		QSignalBlocker block(m_dests);
+		m_dests->item(r, 1)->setText(d.name);
+		m_dests->item(r, 1)->setData(Qt::UserRole, d.server);
+		m_dests->item(r, 1)->setToolTip(d.server);
+		m_dests->item(r, 2)->setData(Qt::UserRole, d.key);
+		refreshDestinationRow(r);
+	}
+	saveDestinations();
 }
 
 QList<Destination> MainWindow::destinations() const
 {
 	QList<Destination> out;
 	for (int r = 0; r < m_dests->rowCount(); ++r) {
+		const QTableWidgetItem *on = m_dests->item(r, 0), *nm = m_dests->item(r, 1), *k = m_dests->item(r, 2);
+		if (!on || !nm || !k)
+			continue; // never trust a row to be complete
 		Destination d;
-		d.enabled = m_dests->item(r, 0)->checkState() == Qt::Checked;
-		d.name = m_dests->item(r, 1)->text();
-		d.server = m_dests->item(r, 2)->text();
-		d.key = m_dests->item(r, 3)->data(Qt::UserRole).toString();
+		d.enabled = on->checkState() == Qt::Checked;
+		d.name = nm->text();
+		d.server = nm->data(Qt::UserRole).toString();
+		d.key = k->data(Qt::UserRole).toString();
 		out.append(d);
 	}
 	return out;
@@ -1054,22 +1638,41 @@ void MainWindow::loadDestinations()
 
 void MainWindow::toggleStream()
 {
+	auto setLiveLook = [this](bool live) {
+		m_goLive->setText(live ? "Stop Streaming" : "Go Live");
+		m_goLive->setProperty("live", live);
+		m_goLive->style()->unpolish(m_goLive);
+		m_goLive->style()->polish(m_goLive);
+		m_destRemove->setEnabled(!live && !m_dests->selectionModel()->selectedRows().isEmpty());
+	};
 	if (m_stream.live()) {
 		m_stream.stop();
-		m_goLive->setText("Go Live");
+		setLiveLook(false);
 		m_statusLabel->setText("Offline");
 		for (int r = 0; r < m_dests->rowCount(); ++r)
-			m_dests->item(r, 4)->setText("offline");
+			setDestinationStatus(r, "offline");
+		updateStats();
 		return;
 	}
 
+	const QList<Destination> dests = destinations();
+	for (const Destination &d : dests)
+		if (d.enabled && d.key.isEmpty() &&
+		    QMessageBox::question(this, "RareStudio",
+					  QString("\"%1\" has no stream key, so that platform will refuse the stream. Go live anyway?")
+						  .arg(d.name)) != QMessageBox::Yes)
+			return;
+
+	m_rec.setPaused(false); // the stream rides the recording's encoder, which must not stay paused
 	QString err;
-	if (!m_stream.start(destinations(), &err)) {
+	if (!m_stream.start(dests, &err)) {
 		QMessageBox::warning(this, "RareStudio", err);
 		return;
 	}
-	m_goLive->setText("Stop Streaming");
+	m_liveSinceMs = QDateTime::currentMSecsSinceEpoch();
+	setLiveLook(true);
 	m_statusLabel->setText("Live (" + m_stream.encoderName() + ")");
+	updateStats();
 }
 
 // ---- Studio Mode, scene and source management ---------------------------------------------------
@@ -1108,15 +1711,6 @@ void MainWindow::showSceneMenu(const QPoint &globalPos)
 	menu.exec(globalPos);
 }
 
-static bool nameTaken(const QString &name)
-{
-	if (obs_source_t *s = obs_get_source_by_name(name.toUtf8().constData())) {
-		obs_source_release(s);
-		return true;
-	}
-	return false;
-}
-
 void MainWindow::renameScene()
 {
 	QListWidgetItem *it = m_scenes->currentItem();
@@ -1135,6 +1729,7 @@ void MainWindow::renameScene()
 		obs_source_release(src);
 		QSignalBlocker block(m_scenes); // same scene, new label: not a scene change
 		it->setText(name);
+		Autosave::touch();
 	}
 }
 
@@ -1150,6 +1745,7 @@ void MainWindow::duplicateScene()
 	if (ObsCore::instance().duplicateScene(scene, name)) {
 		m_scenes->addItem(name);
 		m_scenes->setCurrentRow(m_scenes->count() - 1);
+		Autosave::touch();
 	}
 }
 
@@ -1171,6 +1767,7 @@ void MainWindow::removeScene()
 		obs_source_release(src);
 	}
 	delete m_scenes->takeItem(m_scenes->row(m_scenes->findItems(name, Qt::MatchExactly).value(0)));
+	Autosave::touch();
 }
 
 void MainWindow::renameSource()
@@ -1190,6 +1787,7 @@ void MainWindow::renameSource()
 		obs_source_set_name(src, name.toUtf8().constData());
 		obs_source_release(src);
 	}
+	Autosave::touch();
 	refreshSources();
 	selectInList(name);
 	m_preview->selectByName(name);
@@ -1200,6 +1798,7 @@ void MainWindow::toggleLockSelected()
 	if (obs_sceneitem_t *item = m_preview->selectedItem()) {
 		obs_sceneitem_set_locked(item, !obs_sceneitem_locked(item));
 		obs_sceneitem_release(item);
+		Autosave::touch();
 	}
 }
 
@@ -1229,8 +1828,10 @@ void MainWindow::buildWebDocks()
 				 this);
 	addDockWidget(Qt::RightDockWidgetArea, dash);
 	// Share the Stream panel's space as a tab instead of squeezing in under it.
-	if (auto *stream = findChild<QDockWidget *>("stream"))
+	if (auto *stream = findChild<QDockWidget *>("stream")) {
 		tabifyDockWidget(stream, dash);
+		stream->raise(); // Stream is the tab you want first, not Clips
+	}
 	setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
 	// Choosing it from the View menu should bring its tab to the front.
 	connect(dash->toggleViewAction(), &QAction::toggled, dash, [dash](bool on) {

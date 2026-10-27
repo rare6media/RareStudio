@@ -29,6 +29,7 @@ private:
 	QWidget *buildUpdatesTab();
 	QWidget *buildAccountsTab();
 	QWidget *buildClipsTab();
+	QWidget *buildInterfaceTab();
 	void refreshAccountStatus();
 	bool apply();
 
@@ -38,6 +39,10 @@ private:
 	QComboBox *m_monitor;
 	QLineEdit *m_dir, *m_feed;
 	QCheckBox *m_autoUpdate;
+
+	// Interface
+	QComboBox *m_scale;
+	QCheckBox *m_animations;
 
 	// Accounts
 	QLineEdit *m_twitchId, *m_googleId, *m_googleSecret;

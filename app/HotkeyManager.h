@@ -10,7 +10,7 @@
 class HotkeyManager : public QObject, public QAbstractNativeEventFilter {
 	Q_OBJECT
 public:
-	enum Action { ToggleStream = 1, ToggleRecord, SaveClip, ToggleReplay, MuteMic, NextScene, PrevScene, SceneBase = 100 };
+	enum Action { ToggleStream = 1, ToggleRecord, SaveClip, ToggleReplay, MuteMic, NextScene, PrevScene, PauseRecord, Screenshot, SceneBase = 100 };
 
 	explicit HotkeyManager(QObject *parent = nullptr);
 	~HotkeyManager() override;

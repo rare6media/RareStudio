@@ -9,7 +9,8 @@ small native Qt UI instead of OBS's full frontend.
 - **Embedded YouTube Studio and Twitch dashboards** (software-rendered, nothing runs until you open them).
 - **Sign in once** with Twitch and Google to pull your stream keys automatically.
 - **Instant replay clips**: full-size local clip, a **Twitch clip**, and a **9:16 YouTube Short** (rendered live on a vertical canvas, no conversion step) uploaded as soon as it is saved.
-- Recording, global hotkeys, live CPU/RAM/dropped-frame readout, self-updating from GitHub Releases.
+- Recording with **pause / resume**, **output screenshots**, copy / paste / duplicate sources across scenes (Edit menu).
+- Global hotkeys, live CPU/RAM/dropped-frame readout, self-updating from GitHub Releases.
 
 ## Install
 
@@ -44,7 +45,8 @@ These render through the real engine without opening a window (used to verify tr
 ```
 RareStudioApp.exe --selftest-transitions <dir>   # contact sheets of every transition
 RareStudioApp.exe --selftest-vertical <dir>      # builds a 1080x1920 Short from a test scene
-QT_QPA_PLATFORM=offscreen RareStudioApp.exe --selftest-ui <dir>
+QT_QPA_PLATFORM=offscreen QT_QPA_FONTDIR=C:\Windows\Fonts RareStudioApp.exe --selftest-ui <dir>
+QT_QPA_PLATFORM=offscreen RareStudioApp.exe --selftest-stability <dir>   # destinations, sources, autosave, edit, screenshot, pause
 ```
 
 Set `RARESTUDIO_TEST_PROFILE=<dir>` to run against a throw-away settings/scenes profile.

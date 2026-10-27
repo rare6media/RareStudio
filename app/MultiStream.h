@@ -15,7 +15,7 @@ struct Destination {
 
 struct SignalCtx {
 	class MultiStream *self;
-	QString name;
+	int index; // position in the list handed to start(), so two "Twitch" rows never get each other's status
 };
 
 // One encode, many RTMP outputs: a single video and audio encoder are shared by
@@ -40,11 +40,11 @@ public:
 	Stats stats() const;
 
 signals:
-	void destinationState(const QString &name, const QString &state);
+	void destinationState(int index, const QString &state);
 
 private:
 	struct Out {
-		QString name;
+		int index = -1;
 		SignalCtx *ctx = nullptr;
 		obs_output_t *output = nullptr;
 		obs_service_t *service = nullptr;

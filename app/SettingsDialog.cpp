@@ -7,6 +7,7 @@
 #include "ObsCore.h"
 #include "PropertiesDialog.h"
 #include "Recorder.h"
+#include "UiBits.h"
 #include "Updater.h"
 
 #include <QCheckBox>
@@ -28,6 +29,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -57,7 +59,7 @@ QLabel *hint(const QString &text)
 {
 	auto *l = new QLabel(text);
 	l->setWordWrap(true);
-	l->setStyleSheet("color: #9a9ab0;");
+	l->setObjectName("hint");
 	return l;
 }
 
@@ -74,9 +76,10 @@ SettingsDialog::Video SettingsDialog::load()
 SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
 {
 	setWindowTitle("Settings");
-	resize(620, 520);
+	resize(680, 560);
 
 	auto *tabs = new QTabWidget;
+	tabs->addTab(buildInterfaceTab(), "Interface");
 	tabs->addTab(buildVideoTab(), "Video");
 	tabs->addTab(buildAudioTab(), "Audio");
 	tabs->addTab(buildOutputTab(), "Output");
@@ -84,9 +87,19 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
 	tabs->addTab(buildClipsTab(), "Clips");
 	tabs->addTab(buildHotkeysTab(), "Hotkeys");
 	tabs->addTab(buildUpdatesTab(), "Updates");
+	for (int i = 0; i < tabs->count(); ++i) { // room to breathe on every page
+		QLayout *l = tabs->widget(i)->layout();
+		l->setContentsMargins(18, 18, 18, 18);
+		if (auto *f = qobject_cast<QFormLayout *>(l)) {
+			f->setHorizontalSpacing(16);
+			f->setVerticalSpacing(10);
+		}
+	}
 
 	auto *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
 	auto *lay = new QVBoxLayout(this);
+	lay->setContentsMargins(14, 14, 14, 12);
+	lay->setSpacing(12);
 	lay->addWidget(tabs);
 	lay->addWidget(box);
 	connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -94,6 +107,38 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
 		if (apply())
 			accept();
 	});
+}
+
+QWidget *SettingsDialog::buildInterfaceTab()
+{
+	m_scale = new QComboBox;
+	const struct {
+		const char *label;
+		double scale;
+	} sizes[] = {{"Compact (90%)", 0.9},   {"Normal (100%)", 1.0},  {"Comfortable (115%)", 1.15},
+		     {"Large (130%)", 1.3},    {"Extra large (150%)", 1.5}, {"Huge (175%)", 1.75}};
+	const double cur = UiBits::scaleFactor();
+	int match = 1; // Normal unless the saved size is one of the presets
+	for (const auto &sz : sizes) {
+		m_scale->addItem(sz.label, sz.scale);
+		if (std::abs(sz.scale - cur) < 0.01)
+			match = m_scale->count() - 1;
+	}
+	m_scale->setCurrentIndex(match);
+	m_animations = new QCheckBox("Light animations (fading dialogs and menus, pulsing LIVE / REC badges)");
+	m_animations->setChecked(UiBits::animationsEnabled());
+
+	auto *w = new QWidget;
+	auto *form = new QFormLayout(w);
+	form->addRow("Interface size", m_scale);
+	form->addRow(hint("Scales every panel, button and text on top of Windows' own display scaling. "
+			  "Pick a bigger size if things feel cramped. Takes effect after a restart."));
+	form->addRow(m_animations);
+	form->addRow(hint("Animations are tiny and never touch the video preview, so they cost next to nothing. "
+			  "Turn them off if you prefer everything instant."));
+	form->addRow(hint("Tip: drag the panels by their title bars to rearrange them, and use View > Reset layout "
+			  "to get the default arrangement back."));
+	return w;
 }
 
 QWidget *SettingsDialog::buildVideoTab()
@@ -317,8 +362,11 @@ QWidget *SettingsDialog::buildAccountsTab()
 
 	auto *w = new QWidget;
 	auto *form = new QFormLayout(w);
-	form->addRow(hint("Sign in once and RareStudio can fetch your stream keys, make Twitch clips, and upload "
-			  "9:16 Shorts to YouTube. Tokens are stored encrypted for your Windows user."));
+	form->addRow(hint("<b>Optional, and not needed to stream.</b> Going live only needs the stream key each platform "
+			  "shows you, pasted into the Stream panel (works for Twitch, YouTube, Kick, TikTok and any RTMP server).<br><br>"
+			  "Connecting accounts here only adds extras: stream keys filled in automatically, Twitch clips, and "
+			  "uploading 9:16 Shorts to YouTube. Those need your own developer Client IDs, which Twitch and Google require "
+			  "for any app. Tokens are stored encrypted for your Windows user."));
 	form->addRow("Twitch Client ID", m_twitchId);
 	form->addRow("", row(twitchConnect, twitchOff, m_twitchStatus));
 	form->addRow("Google Client ID", m_googleId);
@@ -481,6 +529,8 @@ bool SettingsDialog::apply()
 	Accounts::instance().setGoogleCredentials(m_googleId->text(), m_googleSecret->text());
 	s.setValue("update/url", m_feed->text().trimmed());
 	s.setValue("update/auto", m_autoUpdate->isChecked());
+	s.setValue("ui/scale", m_scale->currentData());
+	s.setValue("ui/animations", m_animations->isChecked());
 	for (auto it = m_keys.cbegin(); it != m_keys.cend(); ++it)
 		s.setValue(HotkeyManager::settingsKey(HotkeyManager::Action(it.key())), it.value()->keySequence().toString());
 	return true;
