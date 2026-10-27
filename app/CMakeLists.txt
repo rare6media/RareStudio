@@ -6,6 +6,7 @@ add_executable(RareStudioApp WIN32
   MultiStream.h MultiStream.cpp
   PreviewWidget.h PreviewWidget.cpp
   MixerPanel.h MixerPanel.cpp
+  AudioPresets.h AudioPresets.cpp
   PropertiesDialog.h PropertiesDialog.cpp
   TransformDialog.h TransformDialog.cpp
   EncoderPool.h EncoderPool.cpp

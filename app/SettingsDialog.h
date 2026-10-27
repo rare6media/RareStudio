@@ -24,6 +24,7 @@ public:
 private:
 	QWidget *buildVideoTab();
 	QWidget *buildOutputTab();
+	QWidget *buildAudioTab();
 	QWidget *buildHotkeysTab();
 	QWidget *buildUpdatesTab();
 	QWidget *buildAccountsTab();
@@ -34,6 +35,7 @@ private:
 	QComboBox *m_base, *m_out, *m_fps;
 	QComboBox *m_encoder, *m_format;
 	QSpinBox *m_videoKbps, *m_audioKbps, *m_replaySecs;
+	QComboBox *m_monitor;
 	QLineEdit *m_dir, *m_feed;
 	QCheckBox *m_autoUpdate;
 

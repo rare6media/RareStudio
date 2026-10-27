@@ -85,7 +85,7 @@ bool VerticalClip::start(QString *error)
 	m_video = obs_video_encoder_create(enc.toUtf8().constData(), "rare_vertical_video", vs, nullptr);
 	obs_data_release(vs);
 	obs_data_t *as = obs_data_create();
-	obs_data_set_int(as, "bitrate", 160);
+	obs_data_set_int(as, "bitrate", s.value("stream/audio_kbps", 160).toInt());
 	m_audio = obs_audio_encoder_create("ffmpeg_aac", "rare_vertical_audio", as, 0, nullptr);
 	obs_data_release(as);
 	if (!m_video || !m_audio) {

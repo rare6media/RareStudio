@@ -17,10 +17,10 @@ namespace {
 QWebEngineProfile *dashboardProfile()
 {
 	QWebEngineProfile *p = QWebEngineProfile::defaultProfile();
-	// Google rejects sign-in from user agents that look embedded; present as plain Chromium.
-	QString ua = p->httpUserAgent();
-	ua.remove(QRegularExpression(" QtWebEngine/[0-9.]+"));
-	p->setHttpUserAgent(ua);
+	// Twitch and Google reject user agents that look embedded or too old. Qt 6.8 bundles Chromium 122,
+	// which sites now flag as "unsupported", so present as a current desktop Chrome instead.
+	p->setHttpUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+			    "Chrome/141.0.0.0 Safari/537.36");
 	return p;
 }
 

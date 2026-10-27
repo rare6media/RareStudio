@@ -18,6 +18,17 @@ static QString updatesRoot()
 
 Updater::Updater(QObject *parent) : QObject(parent) {}
 
+QString Updater::defaultFeed()
+{
+	return "https://github.com/rare6media/RareStudio/releases/latest/download/latest.json";
+}
+
+QString Updater::feedUrl()
+{
+	const QString custom = QSettings().value("update/url").toString().trimmed();
+	return custom.isEmpty() ? defaultFeed() : custom;
+}
+
 bool Updater::isNewer(const QString &candidate, const QString &current)
 {
 	return QVersionNumber::fromString(candidate) > QVersionNumber::fromString(current);
@@ -25,11 +36,9 @@ bool Updater::isNewer(const QString &candidate, const QString &current)
 
 void Updater::checkNow(bool manual)
 {
-	const QUrl feed(QSettings().value("update/url").toString());
-	if (!feed.isValid() || feed.isEmpty())
-		return; // no feed configured yet
-
-	QNetworkReply *reply = m_net.get(QNetworkRequest(feed));
+	QNetworkRequest req{QUrl(feedUrl())};
+	req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy); // GitHub redirects to its CDN
+	QNetworkReply *reply = m_net.get(req);
 	connect(reply, &QNetworkReply::finished, this, [this, reply, manual] {
 		reply->deleteLater();
 		if (reply->error() != QNetworkReply::NoError) {
@@ -70,7 +79,9 @@ void Updater::cleanOldVersions()
 void Updater::download(const QString &version, const QUrl &url, const QString &sha256)
 {
 	emit status("Downloading update " + version + "...");
-	QNetworkReply *reply = m_net.get(QNetworkRequest(url));
+	QNetworkRequest req(url);
+	req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+	QNetworkReply *reply = m_net.get(req);
 	connect(reply, &QNetworkReply::finished, this, [this, reply, version, sha256] {
 		reply->deleteLater();
 		if (reply->error() != QNetworkReply::NoError) {

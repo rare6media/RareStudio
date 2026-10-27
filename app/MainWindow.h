@@ -80,6 +80,8 @@ private:
 	PreviewWidget *m_preview = nullptr;  // editor
 	PreviewWidget *m_program = nullptr;  // Studio Mode: what is on air
 	QWidget *m_programPane = nullptr;
+	QWidget *m_previewPane = nullptr;
+	QWidget *m_previewHead = nullptr;
 	QSplitter *m_split = nullptr;
 	QPushButton *m_studioBtn = nullptr;
 	QListWidget *m_scenes = nullptr;

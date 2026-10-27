@@ -19,6 +19,9 @@ public:
 	void checkNow(bool manual = false);
 	// Deletes downloaded versions older than the one that is running.
 	void cleanOldVersions();
+	// The built-in GitHub releases feed, unless "update/url" overrides it.
+	static QString defaultFeed();
+	static QString feedUrl();
 	static bool isNewer(const QString &candidate, const QString &current);
 
 signals:

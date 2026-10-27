@@ -1,10 +1,13 @@
 #include "SettingsDialog.h"
 
 #include "Accounts.h"
+#include "AudioPresets.h"
 #include "EncoderPool.h"
 #include "HotkeyManager.h"
 #include "ObsCore.h"
+#include "PropertiesDialog.h"
 #include "Recorder.h"
+#include "Updater.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -23,6 +26,9 @@
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <cstring>
 
 namespace {
 
@@ -72,6 +78,7 @@ SettingsDialog::SettingsDialog(QWidget *parent) : QDialog(parent)
 
 	auto *tabs = new QTabWidget;
 	tabs->addTab(buildVideoTab(), "Video");
+	tabs->addTab(buildAudioTab(), "Audio");
 	tabs->addTab(buildOutputTab(), "Output");
 	tabs->addTab(buildAccountsTab(), "Accounts");
 	tabs->addTab(buildClipsTab(), "Clips");
@@ -126,11 +133,6 @@ QWidget *SettingsDialog::buildOutputTab()
 	m_videoKbps->setRange(500, 50000);
 	m_videoKbps->setSuffix(" kbps");
 	m_videoKbps->setValue(s.value("stream/video_kbps", 6000).toInt());
-	m_audioKbps = new QSpinBox;
-	m_audioKbps->setRange(64, 320);
-	m_audioKbps->setSuffix(" kbps");
-	m_audioKbps->setValue(s.value("stream/audio_kbps", 160).toInt());
-
 	m_dir = new QLineEdit(s.value("record/dir", Recorder::defaultDir()).toString());
 	auto *browse = new QPushButton("Browse...");
 	auto *dirRow = new QHBoxLayout;
@@ -156,7 +158,6 @@ QWidget *SettingsDialog::buildOutputTab()
 	auto *form = new QFormLayout(w);
 	form->addRow("Video encoder", m_encoder);
 	form->addRow("Video bitrate", m_videoKbps);
-	form->addRow("Audio bitrate", m_audioKbps);
 	form->addRow(hint("Streams, recordings and clips share one encode, so using all three at once "
 			  "costs the same CPU/GPU as one. Hardware encoders (NVENC, AMD, Quick Sync) are best."));
 	form->addRow("Recording folder", dirRow);
@@ -164,6 +165,88 @@ QWidget *SettingsDialog::buildOutputTab()
 	form->addRow("Clip length (replay buffer)", m_replaySecs);
 	form->addRow(hint("MKV is safest: a crash won't corrupt the file. Encoder and bitrate changes apply the "
 			  "next time you start streaming or recording."));
+	return w;
+}
+
+QWidget *SettingsDialog::buildAudioTab()
+{
+	QSettings s;
+	ObsCore &core = ObsCore::instance();
+
+	m_audioKbps = new QSpinBox;
+	m_audioKbps->setRange(64, 320);
+	m_audioKbps->setSingleStep(32);
+	m_audioKbps->setSuffix(" kbps");
+	m_audioKbps->setValue(s.value("stream/audio_kbps", 160).toInt());
+
+	m_monitor = new QComboBox;
+	m_monitor->addItem("System default", "default");
+	m_monitor->setItemData(0, "Default", Qt::UserRole + 1);
+	if (obs_audio_monitoring_available()) {
+		obs_enum_audio_monitoring_devices(
+			[](void *p, const char *name, const char *id) {
+				auto *c = static_cast<QComboBox *>(p);
+				if (strcmp(id, "default") != 0) {
+					c->addItem(QString::fromUtf8(name), QString::fromUtf8(id));
+					c->setItemData(c->count() - 1, QString::fromUtf8(name), Qt::UserRole + 1);
+				}
+				return true;
+			},
+			m_monitor);
+		m_monitor->setCurrentIndex(std::max(0, m_monitor->findData(s.value("audio/monitor_id", "default"))));
+	} else {
+		m_monitor->setEnabled(false);
+	}
+
+	// Device pickers and quick setups act on the live sources right away (they are not part of OK/Cancel).
+	auto *micDev = new QPushButton("Microphone device...");
+	auto *deskDev = new QPushButton("Desktop audio device...");
+	micDev->setEnabled(core.micAudio());
+	deskDev->setEnabled(core.desktopAudio());
+	connect(micDev, &QPushButton::clicked, this, [this, &core] { PropertiesDialog(core.micAudio(), this).exec(); });
+	connect(deskDev, &QPushButton::clicked, this,
+		[this, &core] { PropertiesDialog(core.desktopAudio(), this).exec(); });
+	auto *devRow = new QHBoxLayout;
+	devRow->addWidget(micDev);
+	devRow->addWidget(deskDev);
+
+	auto *voice = new QPushButton("Add voice chain to Mic");
+	voice->setToolTip("Noise suppression, noise gate, compressor and limiter. Filters you already have are kept.");
+	auto *desk = new QPushButton("Add limiter to Desktop Audio");
+	auto *levels = new QPushButton("Reset levels");
+	levels->setToolTip("Mic 0 dB, desktop -8 dB, both unmuted, no sync offset.");
+	auto *status = hint("");
+	connect(voice, &QPushButton::clicked, this, [&core, status] {
+		AudioPresets::applyVoiceChain(core.micAudio());
+		status->setText("Mic now has the voice chain (open its Filters from the mixer to fine-tune).");
+	});
+	connect(desk, &QPushButton::clicked, this, [&core, status] {
+		AudioPresets::applyDesktopChain(core.desktopAudio());
+		status->setText("Desktop Audio now has a limiter.");
+	});
+	connect(levels, &QPushButton::clicked, this, [&core, status] {
+		AudioPresets::resetLevels(core.micAudio(), core.desktopAudio());
+		status->setText("Levels reset.");
+	});
+	auto *quickRow = new QHBoxLayout;
+	quickRow->addWidget(voice);
+	quickRow->addWidget(desk);
+	quickRow->addWidget(levels);
+
+	auto *w = new QWidget;
+	auto *form = new QFormLayout(w);
+	form->addRow(new QLabel("<b>Devices</b>"));
+	form->addRow(devRow);
+	form->addRow("Monitoring device (headphones)", m_monitor);
+	form->addRow(hint("Per-source monitoring is switched on from the ⋯ menu on each mixer strip."));
+	form->addRow(new QLabel("<b>Encoding</b>"));
+	form->addRow("Audio bitrate", m_audioKbps);
+	form->addRow(hint("48 kHz stereo AAC, shared by streams, recordings and clips. 160 kbps suits most "
+			  "platforms; use 192-256 for music. Applies the next time you start streaming or recording."));
+	form->addRow(new QLabel("<b>Quick setup</b>"));
+	form->addRow(quickRow);
+	form->addRow(status);
+	form->addRow(hint("Per-source filters, volume, mute and sync offset are saved with your scenes."));
 	return w;
 }
 
@@ -186,20 +269,18 @@ QWidget *SettingsDialog::buildUpdatesTab()
 {
 	QSettings s;
 	m_feed = new QLineEdit(s.value("update/url").toString());
-	m_feed->setPlaceholderText("https://github.com/<you>/<repo>/releases/latest/download/latest.json");
+	m_feed->setPlaceholderText(Updater::defaultFeed());
 	m_autoUpdate = new QCheckBox("Check for updates when RareStudio starts");
 	m_autoUpdate->setChecked(s.value("update/auto", true).toBool());
 
 	auto *w = new QWidget;
 	auto *form = new QFormLayout(w);
 	form->addRow(new QLabel(QString("RareStudio %1").arg(RARESTUDIO_VERSION)));
-	form->addRow("Update feed address", m_feed);
+	form->addRow("Update feed (optional)", m_feed);
 	form->addRow(m_autoUpdate);
-	form->addRow(hint("Updates download in the background and apply the next time you start RareStudio. "
-			  "Your desktop shortcut never changes.\n\n"
-			  "The feed is a small file called latest.json that you upload next to each release zip "
-			  "(installer\\package-update.ps1 creates both). A free GitHub repository works: attach "
-			  "both files to a release, and use the address shown above."));
+	form->addRow(hint("RareStudio checks its GitHub releases automatically. Updates download in the background "
+			  "and apply the next time you start RareStudio. Your desktop shortcut never changes.\n\n"
+			  "Leave the feed address empty to use the built-in one."));
 	return w;
 }
 
@@ -377,6 +458,9 @@ bool SettingsDialog::apply()
 	s.setValue("output/encoder", m_encoder->currentData());
 	s.setValue("stream/video_kbps", m_videoKbps->value());
 	s.setValue("stream/audio_kbps", m_audioKbps->value());
+	s.setValue("audio/monitor_id", m_monitor->currentData());
+	s.setValue("audio/monitor_name", m_monitor->currentData(Qt::UserRole + 1));
+	ObsCore::applyMonitoringDevice();
 	s.setValue("record/dir", m_dir->text());
 	s.setValue("record/format", m_format->currentData());
 	s.setValue("replay/seconds", m_replaySecs->value());

@@ -1,8 +1,11 @@
 #include "ObsCore.h"
 
+#include "AudioPresets.h"
+
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
+#include <QSettings>
 
 #include <graphics/matrix4.h>
 
@@ -353,11 +356,14 @@ void ObsCore::centerOnCanvas(obs_sceneitem_t *item, bool horizontal, bool vertic
 	obs_sceneitem_set_pos(item, &pos);
 }
 
-// Reuses the source restored from the saved collection if there is one.
-static obs_source_t *ensureAudioSource(const char *type, const char *name)
+// Reuses the source restored from the saved collection if there is one; `fresh` says it was created now.
+static obs_source_t *ensureAudioSource(const char *type, const char *name, bool *fresh)
 {
-	if (obs_source_t *existing = obs_get_source_by_name(name))
+	if (obs_source_t *existing = obs_get_source_by_name(name)) {
+		*fresh = false;
 		return existing;
+	}
+	*fresh = true;
 	obs_data_t *s = obs_data_create();
 	obs_data_set_string(s, "device_id", "default");
 	obs_source_t *src = obs_source_create(type, name, s, nullptr);
@@ -365,18 +371,43 @@ static obs_source_t *ensureAudioSource(const char *type, const char *name)
 	return src;
 }
 
+void ObsCore::applyMonitoringDevice()
+{
+	if (!obs_audio_monitoring_available())
+		return;
+	QSettings s;
+	const QByteArray name = s.value("audio/monitor_name", "Default").toString().toUtf8();
+	const QByteArray id = s.value("audio/monitor_id", "default").toString().toUtf8();
+	obs_set_audio_monitoring_device(name.constData(), id.constData());
+}
+
+// First run: a fresh mic gets the voice chain and desktop audio sits under it with a limiter. Collections
+// saved before these defaults existed get the same filters once, but only on sources with no filters.
 void ObsCore::setupDefaultAudio()
 {
+	bool freshDesktop = false, freshMic = false;
 	if (!m_desktop) {
-		m_desktop = ensureAudioSource("wasapi_output_capture", "Desktop Audio");
+		m_desktop = ensureAudioSource("wasapi_output_capture", "Desktop Audio", &freshDesktop);
 		if (m_desktop)
 			obs_set_output_source(1, m_desktop);
 	}
 	if (!m_mic) {
-		m_mic = ensureAudioSource("wasapi_input_capture", "Mic");
+		m_mic = ensureAudioSource("wasapi_input_capture", "Mic", &freshMic);
 		if (m_mic)
 			obs_set_output_source(2, m_mic);
 	}
+
+	QSettings s;
+	if (!s.value("audio/defaults_v1", false).toBool()) {
+		if (freshMic || freshDesktop)
+			AudioPresets::resetLevels(freshMic ? m_mic : nullptr, freshDesktop ? m_desktop : nullptr);
+		if (AudioPresets::filterCount(m_mic) == 0)
+			AudioPresets::applyVoiceChain(m_mic);
+		if (AudioPresets::filterCount(m_desktop) == 0)
+			AudioPresets::applyDesktopChain(m_desktop);
+		s.setValue("audio/defaults_v1", true);
+	}
+	applyMonitoringDevice();
 }
 
 const char *ObsCore::firstAvailableEncoder(std::initializer_list<const char *> candidates)

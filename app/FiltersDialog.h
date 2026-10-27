@@ -4,11 +4,12 @@
 
 #include <QDialog>
 
-class QComboBox;
+class QLabel;
 class QListWidget;
+class QPushButton;
 
-// Add, remove, reorder, enable and configure the filters on a source (video or audio):
-// chroma key, color correction, noise suppression, gain, compressor, noise gate, and so on.
+// Add, remove, reorder, enable and configure the filters on a source. Audio sources get the curated
+// voice/dynamics set plus one-click recommended chains; video sources get colour, keying and layout.
 class FiltersDialog : public QDialog {
 	Q_OBJECT
 public:
@@ -18,12 +19,14 @@ public:
 private:
 	void refresh(const QString &select = QString());
 	obs_source_t *currentFilter() const; // addref'd, caller releases
-	void addFilter();
+	void addFilter(const QString &typeId, const QString &name);
 	void removeFilter();
 	void moveFilter(obs_order_movement dir);
 	void editFilter();
+	void updateHint();
 
 	obs_source_t *m_source;
+	bool m_audio;
 	QListWidget *m_list;
-	QComboBox *m_types;
+	QLabel *m_hint;
 };

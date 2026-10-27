@@ -66,6 +66,8 @@ public:
 	void setupDefaultAudio();
 	obs_source_t *desktopAudio() const { return m_desktop; }
 	obs_source_t *micAudio() const { return m_mic; }
+	// Headphone device for per-source monitoring (settings audio/monitor_*; default = system default).
+	static void applyMonitoringDevice();
 
 	// First id from `candidates` that libobs has registered, else null.
 	static const char *firstAvailableEncoder(std::initializer_list<const char *> candidates);

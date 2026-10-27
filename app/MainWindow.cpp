@@ -88,6 +88,8 @@ const struct {
 	{"wasapi_process_output_capture"}, // audio from a single app
 };
 
+constexpr int kPaneHeadHeight = 32;
+
 } // namespace
 
 MainWindow::MainWindow()
@@ -113,15 +115,39 @@ MainWindow::MainWindow()
 		head->addWidget(label);
 		head->addStretch();
 		head->addWidget(go);
-		pl->addLayout(head);
+		auto *headBox = new QWidget;
+		headBox->setFixedHeight(kPaneHeadHeight); // same height as the editor pane's header
+		head->setContentsMargins(0, 0, 0, 0);
+		headBox->setLayout(head);
+		pl->addWidget(headBox);
 		pl->addWidget(m_program, 1);
 		connect(go, &QPushButton::clicked, this, [] { ObsCore::instance().commitToProgram(); });
 	}
 	m_programPane->hide();
+
+	// The editor preview gets a matching header in Studio Mode so both canvases line up exactly.
+	m_previewPane = new QWidget;
+	{
+		auto *pl = new QVBoxLayout(m_previewPane);
+		pl->setContentsMargins(0, 0, 0, 0);
+		pl->setSpacing(4);
+		m_previewHead = new QWidget;
+		m_previewHead->setFixedHeight(kPaneHeadHeight);
+		auto *hl = new QHBoxLayout(m_previewHead);
+		hl->setContentsMargins(0, 0, 0, 0);
+		auto *label = new QLabel("PREVIEW (editing)");
+		label->setStyleSheet("color: #60a5fa; font-weight: 700;");
+		hl->addWidget(label);
+		hl->addStretch();
+		m_previewHead->hide();
+		pl->addWidget(m_previewHead);
+		pl->addWidget(m_preview, 1);
+	}
 	m_split = new QSplitter(Qt::Horizontal);
-	m_split->addWidget(m_preview);
+	m_split->addWidget(m_previewPane);
 	m_split->addWidget(m_programPane);
 	m_split->setChildrenCollapsible(false);
+	m_split->setHandleWidth(12); // breathing room between the two canvases
 	setCentralWidget(m_split);
 
 	m_statusLabel = new QLabel("Offline");
@@ -871,6 +897,7 @@ void MainWindow::buildMixerDock()
 	m_mixer->addStrip("Desktop Audio", core.desktopAudio());
 	m_mixer->addStrip("Mic", core.micAudio());
 	connect(m_mixer, &MixerPanel::filtersRequested, this, [this](obs_source_t *src) { FiltersDialog(src, this).exec(); });
+	connect(m_mixer, &MixerPanel::propertiesRequested, this, [this](obs_source_t *src) { PropertiesDialog(src, this).exec(); });
 }
 
 // ---- Streaming ------------------------------------------------------------------------------
@@ -1033,6 +1060,7 @@ void MainWindow::setStudio(bool on)
 	core.setStudioMode(on);
 	m_preview->setShowsEditScene(on);
 	m_programPane->setVisible(on);
+	m_previewHead->setVisible(on);
 	if (on) {
 		m_split->setSizes({1, 1});
 		return;
@@ -1157,11 +1185,6 @@ void MainWindow::toggleLockSelected()
 
 void MainWindow::checkForUpdates()
 {
-	if (QSettings().value("update/url").toString().isEmpty()) {
-		QMessageBox::information(this, "RareStudio",
-					 "No update feed is set yet.\n\nPut its address in File > Settings > Updates.");
-		return;
-	}
 	statusBar()->showMessage("Checking for updates...", 4000);
 	m_updater->checkNow(true);
 }
