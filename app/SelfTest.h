@@ -15,6 +15,10 @@ int transitions(const QString &outDir);
 // checks the file was written. Writes vertical.png and vertical.txt into `outDir`.
 int vertical(const QString &outDir);
 
+// Puts a webcam (async video source) on air with no window and renders for a few seconds.
+// Writes video.txt into `outDir`; a crash here reproduces the render-thread crash.
+int video(const QString &outDir);
+
 // Builds the real main window and settings dialogs (run with QT_QPA_PLATFORM=offscreen) and
 // renders them to PNGs in `outDir`, to catch construction crashes and layout problems.
 int ui(const QString &outDir);

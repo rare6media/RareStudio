@@ -224,6 +224,51 @@ int vertical(const QString &outDir)
 	return ok ? 0 : 1;
 }
 
+int video(const QString &outDir)
+{
+	QDir().mkpath(outDir);
+	QFile report(QDir(outDir).filePath("video.txt"));
+	report.open(QIODevice::WriteOnly | QIODevice::Truncate);
+	auto say = [&](const QString &s) {
+		report.write(s.toUtf8() + "\n");
+		report.flush();
+	};
+
+	ObsCore &core = ObsCore::instance();
+	obs_scene_t *scene = core.createScene("videotest");
+	core.setCurrentScene(scene);
+	say("scene on air; adding dshow_input (default webcam)");
+	wait(500);
+
+	obs_source_t *cam = core.addSource("dshow_input", "Video Capture Device");
+	say(cam ? "source added" : "addSource failed");
+	if (cam) {
+		// Same thing the properties dialog does: pick the first real device and push it live.
+		obs_properties_t *props = obs_source_properties(cam);
+		if (obs_property_t *p = obs_properties_get(props, "video_device_id")) {
+			for (size_t i = 0; i < obs_property_list_item_count(p); ++i) {
+				const char *id = obs_property_list_item_string(p, i);
+				if (!id || !*id)
+					continue;
+				say(QString("device: %1").arg(QString::fromUtf8(obs_property_list_item_name(p, i))));
+				obs_data_t *s = obs_source_get_settings(cam);
+				obs_data_set_string(s, "video_device_id", id);
+				obs_source_update(cam, s);
+				obs_data_release(s);
+				break;
+			}
+		}
+		obs_properties_destroy(props);
+	}
+	wait(4000); // several frames through the async convert + draw path
+	if (cam) {
+		say(QString("size %1x%2").arg(obs_source_get_width(cam)).arg(obs_source_get_height(cam)));
+		obs_source_release(cam);
+	}
+	say("survived");
+	return 0;
+}
+
 int ui(const QString &outDir)
 {
 	QDir().mkpath(outDir);

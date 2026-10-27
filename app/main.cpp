@@ -13,16 +13,8 @@
 #include <QMessageBox>
 #include <QStyleFactory>
 
-#include <windows.h>
-
 int main(int argc, char **argv)
 {
-	// Crash dumps show NVIDIA's overlay/capture hook (nvspcap64.dll) inside our D3D11 render thread,
-	// faulting in the driver. That DLL arrives through the legacy "extension points" (global window
-	// hooks / AppInit). Refusing them keeps third-party overlays out of the render path.
-	PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY ext = {};
-	ext.DisableExtensionPoints = 1;
-	SetProcessMitigationPolicy(ProcessExtensionPointDisablePolicy, &ext, sizeof(ext));
 
 	// Keep embedded browser docks cheap: one shared renderer, no GPU raster of its own.
 	// Dashboards are mostly text: render them in software so the browser never touches the GPU
@@ -94,6 +86,11 @@ int main(int argc, char **argv)
 		const QStringList args = app.arguments();
 		if (const int i = args.indexOf("--selftest-ui"); i >= 0) {
 			const int rc = SelfTest::ui(args.value(i + 1, QDir::tempPath() + "/rarestudio-selftest"));
+			ObsCore::instance().shutdown();
+			return rc;
+		}
+		if (const int i = args.indexOf("--selftest-video"); i >= 0) {
+			const int rc = SelfTest::video(args.value(i + 1, QDir::tempPath() + "/rarestudio-selftest"));
 			ObsCore::instance().shutdown();
 			return rc;
 		}

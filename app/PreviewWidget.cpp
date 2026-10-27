@@ -73,6 +73,9 @@ void drawUnitShape(gs_effect_t *solid, const vec4 &color, bool outline)
 	gs_draw(outline ? GS_LINESTRIP : GS_TRISTRIP, 0, 0);
 	gs_technique_end_pass(tech);
 	gs_technique_end(tech);
+	// Unbind before destroying: the device keeps the pointer, and the next draw that expects no vertex
+	// buffer (webcam colour conversion) would otherwise read this freed one and crash in the driver.
+	gs_load_vertexbuffer(nullptr);
 	gs_vertexbuffer_destroy(vb);
 }
 
