@@ -1,0 +1,19 @@
+﻿diff --git a/libobs/graphics/graphics.c b/libobs/graphics/graphics.c
+index 00abe2e..0cae6de 100644
+--- a/libobs/graphics/graphics.c
++++ b/libobs/graphics/graphics.c
+@@ -874,8 +874,13 @@ gs_effect_t *gs_effect_create(const char *effect_string, const char *filename, c
+ 	ep_init(&parser);
+ 	success = ep_parse(&parser, effect, effect_string, filename);
+ 	if (!success) {
+-		if (error_string)
++		if (error_string) {
+ 			*error_string = error_data_buildstring(&parser.cfp.error_list);
++		} else {
++			char *msg = error_data_buildstring(&parser.cfp.error_list);
++			blog(LOG_ERROR, "Error parsing effect '%s':\n%s", filename ? filename : "(memory)", msg ? msg : "(no details)");
++			bfree(msg);
++		}
+ 		gs_effect_destroy(effect);
+ 		effect = NULL;
+ 	}

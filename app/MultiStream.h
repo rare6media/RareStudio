@@ -1,0 +1,58 @@
+#pragma once
+
+#include <obs.h>
+
+#include <QList>
+#include <QObject>
+#include <QString>
+
+struct Destination {
+	QString name;
+	QString server;
+	QString key;
+	bool enabled = true;
+};
+
+struct SignalCtx {
+	class MultiStream *self;
+	QString name;
+};
+
+// One encode, many RTMP outputs: a single video and audio encoder are shared by
+// every destination, so adding platforms costs upload bandwidth, not CPU/GPU.
+class MultiStream : public QObject {
+	Q_OBJECT
+public:
+	explicit MultiStream(QObject *parent = nullptr) : QObject(parent) {}
+	~MultiStream() override { stop(); }
+
+	bool start(const QList<Destination> &dests, QString *error);
+	void stop();
+	bool live() const { return !m_outputs.isEmpty(); }
+
+	QString encoderName() const { return m_encoderName; }
+
+	struct Stats {
+		int dropped = 0;
+		int total = 0;
+		quint64 bytes = 0; // all destinations combined
+	};
+	Stats stats() const;
+
+signals:
+	void destinationState(const QString &name, const QString &state);
+
+private:
+	struct Out {
+		QString name;
+		SignalCtx *ctx = nullptr;
+		obs_output_t *output = nullptr;
+		obs_service_t *service = nullptr;
+	};
+
+	static void onSignal(void *param, calldata_t *cd);
+	void teardown();
+
+	QList<Out> m_outputs;
+	QString m_encoderName;
+};

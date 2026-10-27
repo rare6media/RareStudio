@@ -1,0 +1,9 @@
+build/
+dist/
+*.user
+*.autosave
+CMakeCache.txt
+CMakeFiles/
+.vs/
+.vscode/
+aqtinstall.log
