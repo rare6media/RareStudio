@@ -95,3 +95,4 @@ if ($Start) {
 } else {
     Write-Host 'Start it from your desktop shortcut.'
 }
+exit 0 # robocopy leaves 1 ("files copied") in $LASTEXITCODE, which would otherwise read as a failure
