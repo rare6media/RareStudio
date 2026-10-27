@@ -8,7 +8,9 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QLineEdit>
+#include <QTimer>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -19,18 +21,31 @@ PropertiesDialog::PropertiesDialog(obs_source_t *source, QWidget *parent) : QDia
 	resize(460, 0);
 
 	m_settings = obs_source_get_settings(source);
+	m_original = obs_data_create();
+	obs_data_apply(m_original, m_settings); // what Cancel goes back to
 	m_props = obs_source_properties(source);
+
+	// Edits are applied shortly after they stop, so dragging a slider doesn't re-init the source on every tick.
+	m_live = new QTimer(this);
+	m_live->setSingleShot(true);
+	m_live->setInterval(90);
+	connect(m_live, &QTimer::timeout, this, &PropertiesDialog::apply);
 
 	auto *outer = new QVBoxLayout(this);
 	m_form = new QFormLayout;
 	outer->addLayout(m_form);
+	auto *hint = new QLabel("Changes apply live. Cancel puts everything back.");
+	hint->setStyleSheet("color: #9a9ab0;");
+	outer->addWidget(hint);
 	auto *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
 	outer->addWidget(box);
 	connect(box, &QDialogButtonBox::accepted, this, [this] {
+		m_live->stop();
 		apply();
 		accept();
 	});
 	connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
+	connect(this, &QDialog::rejected, this, &PropertiesDialog::restoreOriginal); // also covers the window's X
 
 	rebuild();
 }
@@ -39,6 +54,30 @@ PropertiesDialog::~PropertiesDialog()
 {
 	obs_properties_destroy(m_props);
 	obs_data_release(m_settings);
+	obs_data_release(m_original);
+}
+
+void PropertiesDialog::restoreOriginal()
+{
+	m_live->stop();
+	obs_data_clear(m_settings);
+	obs_data_apply(m_settings, m_original);
+	obs_source_update(m_source, m_settings);
+}
+
+void PropertiesDialog::hook(QWidget *w)
+{
+	auto go = [this] { m_live->start(); };
+	if (auto *c = qobject_cast<QCheckBox *>(w))
+		connect(c, &QCheckBox::toggled, this, go);
+	else if (auto *s = qobject_cast<QSpinBox *>(w))
+		connect(s, &QSpinBox::valueChanged, this, go);
+	else if (auto *d = qobject_cast<QDoubleSpinBox *>(w))
+		connect(d, &QDoubleSpinBox::valueChanged, this, go);
+	else if (auto *cb = qobject_cast<QComboBox *>(w))
+		connect(cb, &QComboBox::currentIndexChanged, this, go);
+	else if (auto *e = qobject_cast<QLineEdit *>(w))
+		connect(e, &QLineEdit::editingFinished, this, go); // not per keystroke: URLs/paths would reload each time
 }
 
 void PropertiesDialog::rebuild()
@@ -94,6 +133,7 @@ void PropertiesDialog::rebuild()
 				const quint32 v = 0xFF000000u | (quint32(c.blue()) << 16) | (quint32(c.green()) << 8) | quint32(c.red());
 				b->setProperty("abgr", v);
 				paint(v);
+				m_live->start();
 			});
 			w = b;
 			break;
@@ -114,6 +154,7 @@ void PropertiesDialog::rebuild()
 					if (!f.isEmpty())
 						e->setText(f);
 				});
+				hook(e);
 				m_widgets.insert(name, e);
 				m_form->addRow(label, row);
 				continue;
@@ -156,12 +197,19 @@ void PropertiesDialog::rebuild()
 
 		if (!obs_property_enabled(p))
 			w->setEnabled(false);
+		hook(w);
 		m_widgets.insert(name, w);
 		m_form->addRow(label, w);
 	}
 }
 
 void PropertiesDialog::apply()
+{
+	collect();
+	obs_source_update(m_source, m_settings);
+}
+
+void PropertiesDialog::collect()
 {
 	for (auto it = m_widgets.cbegin(); it != m_widgets.cend(); ++it) {
 		const QByteArray key = it.key().toUtf8();
@@ -190,5 +238,4 @@ void PropertiesDialog::apply()
 			}
 		}
 	}
-	obs_source_update(m_source, m_settings);
 }
