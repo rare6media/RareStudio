@@ -39,5 +39,5 @@ if (Test-Path $changelog) {
 }
 Set-Content (Join-Path $dist 'notes.md') $notes -Encoding utf8
 @{ version = $ver; url = "$BaseUrl/RareStudio-$ver.zip"; sha256 = $sha; notes = $notes } |
-    ConvertTo-Json | Set-Content (Join-Path $dist 'latest.json') -Encoding utf8
+    ConvertTo-Json | ForEach-Object { [IO.File]::WriteAllText((Join-Path $dist 'latest.json'), $_, (New-Object Text.UTF8Encoding $false)) } # no BOM: Qt's JSON parser rejects one
 Write-Host "Wrote $zip ($sha)"
