@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 
 #include "Accounts.h"
+#include "Changelog.h"
 #include "AudioPresets.h"
 #include "EncoderPool.h"
 #include "HotkeyManager.h"
@@ -313,18 +314,122 @@ QWidget *SettingsDialog::buildHotkeysTab()
 QWidget *SettingsDialog::buildUpdatesTab()
 {
 	QSettings s;
-	m_feed = new QLineEdit(s.value("update/url").toString());
-	m_feed->setPlaceholderText(Updater::defaultFeed());
+	// Share the main window's updater so a download started here survives closing this dialog.
+	Updater *updater = parent() ? parent()->findChild<Updater *>() : nullptr;
+	if (!updater)
+		updater = new Updater(this);
+
+	auto *installed = new QLabel(QString("RareStudio %1  -  build %2").arg(RARESTUDIO_VERSION, RARESTUDIO_BUILD));
+	installed->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	m_latest = new QLabel("Not checked yet");
+	m_latest->setWordWrap(true);
+	auto *check = new QPushButton("Check now");
+	auto *notes = new QPushButton("What's new");
+	auto *latestRow = new QHBoxLayout;
+	latestRow->addWidget(m_latest, 1);
+	latestRow->addWidget(check);
+	latestRow->addWidget(notes);
+	connect(notes, &QPushButton::clicked, this, [this] { Changelog::show(this); });
+
+	const auto setLatest = [this](const QString &text) { m_latest->setText(text); };
+	connect(check, &QPushButton::clicked, this, [=] {
+		check->setEnabled(false);
+		setLatest("Checking...");
+		updater->checkNow(true);
+	});
+	connect(updater, &Updater::checked, this, [=](const QString &latest, const QString &, bool newer) {
+		check->setEnabled(true);
+		setLatest(newer ? QString("RareStudio %1 is available").arg(latest)
+				: Updater::isNewer(latest, RARESTUDIO_VERSION) ? QString("RareStudio %1 is available but skipped").arg(latest)
+									       : QString("%1 is the latest release. You are up to date.").arg(latest));
+	});
+	connect(updater, &Updater::checkFailed, this, [=](const QString &why) {
+		check->setEnabled(true);
+		setLatest("Could not check: " + why);
+	});
+	connect(updater, &Updater::updateReady, this, [=](const QString &v) { setLatest(QString("RareStudio %1 is downloaded. Restart to apply it.").arg(v)); });
+	connect(updater, &Updater::status, this, [=](const QString &msg) {
+		if (msg.startsWith("Downloading") || msg.contains("rejected") || msg.contains("failed") || msg.startsWith("Could not")) {
+			setLatest(msg);
+			check->setEnabled(true);
+		}
+	});
+
 	m_autoUpdate = new QCheckBox("Check for updates when RareStudio starts");
 	m_autoUpdate->setChecked(s.value("update/auto", true).toBool());
 
+	// Releases you chose not to take (also set automatically when you roll back).
+	auto *skipRow = new QWidget;
+	auto *skipLay = new QHBoxLayout(skipRow);
+	skipLay->setContentsMargins(0, 0, 0, 0);
+	auto *skipLabel = new QLabel;
+	auto *unskip = new QPushButton("Stop skipping");
+	skipLay->addWidget(skipLabel, 1);
+	skipLay->addWidget(unskip);
+	const auto refreshSkip = [skipRow, skipLabel] {
+		skipRow->setVisible(!Updater::skipped().isEmpty());
+		skipLabel->setText(QString("Skipping %1: it will not be downloaded automatically.").arg(Updater::skipped()));
+	};
+	refreshSkip();
+	connect(unskip, &QPushButton::clicked, this, [=] {
+		Updater::setSkipped({});
+		refreshSkip();
+	});
+
+	m_keep = new QSpinBox;
+	m_keep->setRange(0, 5);
+	m_keep->setValue(Updater::keepCount());
+	m_keep->setSuffix(" older versions");
+
+	m_rollback = new QComboBox;
+	const QStringList targets = Updater::rollbackTargets();
+	m_rollback->addItems(targets);
+	auto *rollBtn = new QPushButton("Roll back");
+	rollBtn->setEnabled(!targets.isEmpty());
+	m_rollback->setEnabled(!targets.isEmpty());
+	if (targets.isEmpty())
+		m_rollback->addItem("No older versions kept");
+	auto *rollRow = new QHBoxLayout;
+	rollRow->addWidget(m_rollback, 1);
+	rollRow->addWidget(rollBtn);
+	connect(rollBtn, &QPushButton::clicked, this, [this] {
+		const QString v = m_rollback->currentText();
+		if (QMessageBox::question(this, "Roll back",
+					  QString("Go back to RareStudio %1?\n\nRareStudio will close and restart on that version. Your scenes, sources "
+						  "and settings are kept. The release you leave will be skipped until you stop skipping it.")
+						  .arg(v)) != QMessageBox::Yes)
+			return;
+		QString err;
+		if (!Updater::rollbackTo(v, &err)) {
+			QMessageBox::warning(this, "Roll back", err);
+			return;
+		}
+		accept();
+		if (QWidget *w = parentWidget() ? parentWidget()->window() : nullptr)
+			w->close();
+	});
+
+	m_changelogMode = new QComboBox;
+	m_changelogMode->addItem("After each update", "update");
+	m_changelogMode->addItem("Every time RareStudio starts", "always");
+	m_changelogMode->addItem("Never", "never");
+	m_changelogMode->setCurrentIndex(std::max(0, m_changelogMode->findData(s.value("ui/changelog", "update").toString())));
+
+	m_feed = new QLineEdit(s.value("update/url").toString());
+	m_feed->setPlaceholderText(Updater::defaultFeed());
+
 	auto *w = new QWidget;
 	auto *form = new QFormLayout(w);
-	form->addRow(new QLabel(QString("RareStudio %1").arg(RARESTUDIO_VERSION)));
-	form->addRow("Update feed (optional)", m_feed);
+	form->addRow("Installed", installed);
+	form->addRow("Latest release", latestRow);
 	form->addRow(m_autoUpdate);
-	form->addRow(hint("RareStudio checks its GitHub releases automatically. Updates download in the background "
-			  "and apply the next time you start RareStudio. Your desktop shortcut never changes.\n\n"
+	form->addRow(skipRow);
+	form->addRow("Keep", m_keep);
+	form->addRow("Roll back to", rollRow);
+	form->addRow("Show what's new", m_changelogMode);
+	form->addRow("Update feed (optional)", m_feed);
+	form->addRow(hint("Updates download in the background and apply the next time you start RareStudio. Your desktop shortcut "
+			  "never changes. Kept versions let you roll back if a release misbehaves.\n\n"
 			  "Leave the feed address empty to use the built-in one."));
 	return w;
 }
@@ -454,7 +559,9 @@ QWidget *SettingsDialog::buildClipsTab()
 	m_shortStyle->addItem("Fit with black bars", "fit");
 	m_shortStyle->setCurrentIndex(std::max(0, m_shortStyle->findData(s.value("shorts/style", "blurred"))));
 
-	m_autoUpload = new QCheckBox("Upload each Short to YouTube as soon as it is saved");
+	m_reviewShort = new QCheckBox("Review each Short in the editor first (trim it, balance its audio tracks, then upload from there)");
+	m_reviewShort->setChecked(s.value("clips/review", true).toBool());
+	m_autoUpload = new QCheckBox("Upload each Short to YouTube as soon as it is saved (when review is off)");
 	m_autoUpload->setChecked(s.value("clips/upload", false).toBool());
 	m_privacy = new QComboBox;
 	m_privacy->addItem("Private", "private");
@@ -473,6 +580,7 @@ QWidget *SettingsDialog::buildClipsTab()
 	form->addRow(m_makeShort);
 	form->addRow("Short length", m_shortSecs);
 	form->addRow("Short layout", m_shortStyle);
+	form->addRow(m_reviewShort);
 	form->addRow(m_autoUpload);
 	form->addRow("Upload visibility", m_privacy);
 	form->addRow("Short title", m_shortTitle);
@@ -522,6 +630,7 @@ bool SettingsDialog::apply()
 	s.setValue("shorts/seconds", m_shortSecs->value());
 	s.setValue("shorts/style", m_shortStyle->currentData());
 	s.setValue("clips/upload", m_autoUpload->isChecked());
+	s.setValue("clips/review", m_reviewShort->isChecked());
 	s.setValue("clips/privacy", m_privacy->currentData());
 	s.setValue("clips/title", m_shortTitle->text());
 	s.setValue("accounts/autokeys", m_autoKeys->isChecked());
@@ -529,6 +638,8 @@ bool SettingsDialog::apply()
 	Accounts::instance().setGoogleCredentials(m_googleId->text(), m_googleSecret->text());
 	s.setValue("update/url", m_feed->text().trimmed());
 	s.setValue("update/auto", m_autoUpdate->isChecked());
+	s.setValue("update/keep", m_keep->value());
+	s.setValue("ui/changelog", m_changelogMode->currentData());
 	s.setValue("ui/scale", m_scale->currentData());
 	s.setValue("ui/animations", m_animations->isChecked());
 	for (auto it = m_keys.cbegin(); it != m_keys.cend(); ++it)

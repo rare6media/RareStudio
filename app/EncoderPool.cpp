@@ -1,5 +1,6 @@
 #include "EncoderPool.h"
 
+#include "AudioTracks.h"
 #include "ObsCore.h"
 
 #include <QSettings>
@@ -71,6 +72,15 @@ bool EncoderPool::acquire(QString *error)
 	m_audio = obs_audio_encoder_create("ffmpeg_aac", "rare_audio", as, 0, nullptr);
 	obs_data_release(as);
 
+	for (int i = 1; i < AudioTracks::kCount; ++i) {
+		obs_data_t *ts = obs_data_create();
+		obs_data_set_int(ts, "bitrate", audioKbps);
+		m_extraAudio[i - 1] = obs_audio_encoder_create("ffmpeg_aac", QString("rare_audio_t%1").arg(i + 1).toUtf8().constData(), ts, size_t(i), nullptr);
+		obs_data_release(ts);
+		if (m_extraAudio[i - 1])
+			obs_encoder_set_audio(m_extraAudio[i - 1], obs_get_audio());
+	}
+
 	if (!m_video || !m_audio) {
 		if (error)
 			*error = "Could not create encoders.";
@@ -93,5 +103,10 @@ void EncoderPool::release()
 		return;
 	obs_encoder_release(m_video);
 	obs_encoder_release(m_audio);
+	for (obs_encoder_t *&e : m_extraAudio) {
+		if (e)
+			obs_encoder_release(e);
+		e = nullptr;
+	}
 	m_video = m_audio = nullptr;
 }

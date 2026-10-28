@@ -1,5 +1,6 @@
 #include "VerticalClip.h"
 
+#include "AudioTracks.h"
 #include "EncoderPool.h"
 #include "Recorder.h"
 
@@ -87,6 +88,11 @@ bool VerticalClip::start(QString *error)
 	obs_data_t *as = obs_data_create();
 	obs_data_set_int(as, "bitrate", s.value("stream/audio_kbps", 160).toInt());
 	m_audio = obs_audio_encoder_create("ffmpeg_aac", "rare_vertical_audio", as, 0, nullptr);
+	for (int t = 1; t < AudioTracks::kCount; ++t) { // one encoder per track (see AudioTracks.h)
+		m_trackAudio[t - 1] = obs_audio_encoder_create("ffmpeg_aac", QString("rare_vertical_audio_t%1").arg(t + 1).toUtf8().constData(), as, size_t(t), nullptr);
+		if (m_trackAudio[t - 1])
+			obs_encoder_set_audio(m_trackAudio[t - 1], obs_get_audio());
+	}
 	obs_data_release(as);
 	if (!m_video || !m_audio) {
 		if (error)
@@ -115,6 +121,9 @@ bool VerticalClip::start(QString *error)
 	}
 	obs_output_set_video_encoder(m_output, m_video);
 	obs_output_set_audio_encoder(m_output, m_audio, 0);
+	for (int t = 1; t < AudioTracks::kCount; ++t)
+		if (m_trackAudio[t - 1])
+			obs_output_set_audio_encoder(m_output, m_trackAudio[t - 1], size_t(t));
 	signal_handler_connect(obs_output_get_signal_handler(m_output), "saved", onSaved, this);
 
 	rebuildLayout();
@@ -141,6 +150,11 @@ void VerticalClip::stop()
 	if (m_video) {
 		obs_encoder_release(m_video);
 		m_video = nullptr;
+	}
+	for (obs_encoder_t *&e : m_trackAudio) {
+		if (e)
+			obs_encoder_release(e);
+		e = nullptr;
 	}
 	if (m_audio) {
 		obs_encoder_release(m_audio);

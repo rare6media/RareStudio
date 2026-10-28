@@ -39,6 +39,9 @@ private:
 	QComboBox *m_monitor;
 	QLineEdit *m_dir, *m_feed;
 	QCheckBox *m_autoUpdate;
+	QLabel *m_latest;
+	QSpinBox *m_keep;
+	QComboBox *m_rollback, *m_changelogMode;
 
 	// Interface
 	QComboBox *m_scale;
@@ -50,7 +53,7 @@ private:
 	QCheckBox *m_autoKeys;
 
 	// Clips
-	QCheckBox *m_localClip, *m_twitchClip, *m_makeShort, *m_autoUpload;
+	QCheckBox *m_localClip, *m_twitchClip, *m_makeShort, *m_autoUpload, *m_reviewShort;
 	QSpinBox *m_twitchClipSecs, *m_shortSecs;
 	QComboBox *m_shortStyle, *m_privacy;
 	QLineEdit *m_shortTitle;

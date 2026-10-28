@@ -1,4 +1,9 @@
 #include "SelfTest.h"
+#include "AudioTracks.h"
+#include "Changelog.h"
+#include "ClipMedia.h"
+#include "Collections.h"
+#include "SplashScreen.h"
 
 #include "ObsCore.h"
 #include "FiltersDialog.h"
@@ -248,8 +253,13 @@ int vertical(const QString &outDir)
 	const bool ok = fi.exists() && fi.size() > 50000;
 	say(ok ? QString("OK clip %1 (%2 KB)").arg(savedPath).arg(fi.size() / 1024)
 	       : QString("FAIL clip missing or tiny: [%1]").arg(savedPath));
+	// Every audio track must reach the file, so the clip editor can balance them (AudioTracks.h).
+	const ClipMedia::Info info = ClipMedia::probe(savedPath);
+	const bool tracksOk = info.ok && info.audioTracks == AudioTracks::kCount;
+	say(tracksOk ? QString("OK clip has %1 audio tracks").arg(info.audioTracks)
+		     : QString("FAIL clip has %1 audio tracks, expected %2 (%3)").arg(info.audioTracks).arg(AudioTracks::kCount).arg(info.error));
 	clip.stop();
-	return ok ? 0 : 1;
+	return ok && tracksOk ? 0 : 1;
 }
 
 int video(const QString &outDir)
@@ -363,7 +373,7 @@ int stability(const QString &outDir)
 		say(QString(ok ? "PASS  " : "FAIL  ") + what);
 		failures += ok ? 0 : 1;
 	};
-	const QString scenesPath = qEnvironmentVariable("APPDATA") + "/RareStudio/scenes.json";
+	const QString scenesPath = Collections::activeFile();
 	auto savedScenes = [&] {
 		QFile f(scenesPath);
 		return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
@@ -374,6 +384,11 @@ int stability(const QString &outDir)
 	w.show();
 	wait(1200);
 	check(QSettings().value("session/running").toBool(), "session marked running (unclean exit is detectable)");
+	{ // clip audio tracks: Mix + one track per kind of source (AudioTracks.h)
+		obs_source_t *mic = ObsCore::instance().micAudio(), *desk = ObsCore::instance().desktopAudio();
+		check(mic && obs_source_get_audio_mixers(mic) == 0b0011, "microphone feeds the Mix and the Microphone track");
+		check(desk && obs_source_get_audio_mixers(desk) == 0b0101, "desktop audio feeds the Mix and the Desktop track");
+	}
 	auto *table = w.findChild<QTableWidget *>();
 	QPushButton *addDest = nullptr;
 	for (QPushButton *b : w.findChildren<QPushButton *>())
@@ -669,6 +684,20 @@ int ui(const QString &outDir)
 			wait(300);
 			filters.grab().save(QDir(outDir).filePath("filters_dialog.png"));
 			filters.close();
+		}
+		{
+			SplashScreen splash;
+			for (double t : {1.0, 2.0, 2.6, 3.6}) {
+				splash.freezeAt(t);
+				splash.repaint();
+				splash.grab().save(QDir(outDir).filePath(QString("splash_%1.png").arg(t)));
+			}
+		}
+		Changelog::show(&w);
+		wait(300);
+		if (auto *dlg = w.findChild<QDialog *>()) {
+			dlg->grab().save(QDir(outDir).filePath("changelog.png"));
+			dlg->close();
 		}
 		w.close();
 	}

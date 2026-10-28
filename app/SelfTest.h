@@ -28,4 +28,8 @@ int ui(const QString &outDir);
 // Writes stability.txt into `outDir` (PASS/FAIL per check); returns non-zero on any failure.
 int stability(const QString &outDir);
 
+// Clip pipeline (ClipMedia): builds a clip with three known tones as three audio tracks, then checks
+// probing, decoding, preview frames, trimming and the track mixdown. Writes clips.txt; non-zero on failure.
+int clips(const QString &outDir);
+
 } // namespace SelfTest

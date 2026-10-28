@@ -1,13 +1,21 @@
 #include "MainWindow.h"
 
 #include "Accounts.h"
+#include "AudioTracks.h"
+#include "Changelog.h"
+#include "ClipEditor.h"
+#include "Collections.h"
+#include "Overlays.h"
 #include "ClipsPanel.h"
+#include "CrashReport.h"
+#include "SplashScreen.h"
 #include "FiltersDialog.h"
 #include "HotkeyManager.h"
 #include "MixerPanel.h"
 #include "ObsCore.h"
 #include "PreviewWidget.h"
 #include "PropertiesDialog.h"
+#include "SourcePicker.h"
 #include "SettingsDialog.h"
 #include "Secrets.h"
 #include "TransformDialog.h"
@@ -22,6 +30,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QActionGroup>
 #include <QMenu>
 #include <QTimer>
 #include <QComboBox>
@@ -31,6 +40,8 @@
 #include <QFormLayout>
 #include <QProcess>
 #include <QToolButton>
+#include <QFrame>
+#include <QAction>
 #include <QUrl>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -65,13 +76,11 @@
 namespace {
 
 // Bump when docks are added/removed so a stale saved layout does not hide or scramble them.
-constexpr int kLayoutVersion = 4;
+constexpr int kLayoutVersion = 5; // 5: vertical mixer strips
 
 QString scenesFile()
 {
-	const QString dir = qEnvironmentVariable("APPDATA") + "/RareStudio";
-	QDir().mkpath(dir);
-	return dir + "/scenes.json";
+	return Collections::activeFile(); // the active scene collection
 }
 
 // Streaming only ever needs the server + stream key each platform shows you; no API keys, no sign-in.
@@ -200,24 +209,6 @@ bool editDestinationDialog(QWidget *parent, Destination &d, bool isNew)
 	return true;
 }
 
-const struct {
-	const char *id;
-	const char *blurb;
-} kSourceTypes[] = {
-	{"monitor_capture", "A whole monitor"},
-	{"window_capture", "One app's window"},
-	{"game_capture", "A full-screen or windowed game (lowest overhead)"},
-	{"dshow_input", "Webcam or capture card"},
-	{"ffmpeg_source", "Video/audio file, or a stream URL (untick Local File)"},
-	{"image_source", "A picture or overlay"},
-	{"slideshow", "Several pictures in rotation"},
-	{"text_gdiplus", "Text, live as you type"},
-	{"color_source_v3", "A solid colour"},
-	{"wasapi_input_capture", "A microphone or line-in"},
-	{"wasapi_output_capture", "Everything a playback device plays"},
-	{"wasapi_process_output_capture", "Audio from a single app"},
-};
-
 constexpr int kPaneHeadHeight = 32;
 
 // Every list in the UI finds sources by name, so names have to stay unique.
@@ -242,7 +233,7 @@ QString uniqueName(const QString &base)
 
 MainWindow::MainWindow()
 {
-	setWindowTitle("RareStudio");
+	setWindowTitle(QString("RareStudio - %1").arg(Collections::active()));
 	setDockNestingEnabled(true);
 
 	// Centre: the editor preview, plus (in Studio Mode) a read-only view of what is on air.
@@ -331,13 +322,30 @@ MainWindow::MainWindow()
 	QMenu *edit = menuBar()->addMenu("&Edit");
 	m_viewMenu = menuBar()->addMenu("&View");
 
+	QMenu *help = menuBar()->addMenu("&Help");
+	help->addAction("&What's new", this, [this] { Changelog::show(this); });
+	help->addAction("Check for &updates", this, &MainWindow::checkForUpdates);
+	help->addSeparator();
+	help->addAction("Open &logs folder", this, [] { QDesktopServices::openUrl(QUrl::fromLocalFile(CrashReport::logsDir())); });
+	help->addAction(QString("&About RareStudio %1").arg(RARESTUDIO_VERSION), this, [this] {
+		QMessageBox::about(this, "About RareStudio",
+				   QString("<b>RareStudio %1</b><br>Build %2<br><br>A lighter OBS-style streaming studio.").arg(RARESTUDIO_VERSION, RARESTUDIO_BUILD));
+	});
+
+	// Each step is slow enough to freeze the startup sequence; pump() keeps it moving between them.
+	AudioTracks::routeAll(); // scenes are loaded: sort their audio into the clip tracks
 	buildToolbar();
+	SplashScreen::pump();
 	buildScenesDock(sceneOrder);
 	buildSourcesDock();
+	SplashScreen::pump();
 	buildMixerDock();
+	SplashScreen::pump();
 	buildStreamDock();
 	buildClipsDock();
+	SplashScreen::pump();
 	buildWebDocks();
+	SplashScreen::pump();
 
 	if (m_scenes->count() == 0)
 		addScene();
@@ -378,6 +386,7 @@ MainWindow::MainWindow()
 	connect(m_preview, &PreviewWidget::contextRequested, this, &MainWindow::showItemMenu);
 	connect(m_preview, &PreviewWidget::deleteRequested, this, &MainWindow::removeSelectedSource);
 
+	buildCollectionsMenu(file->addMenu("Scene &collection"));
 	file->addAction("&Settings...", this, &MainWindow::openSettings);
 	file->addAction("Check for &updates", this, &MainWindow::checkForUpdates);
 	file->addSeparator();
@@ -394,6 +403,9 @@ MainWindow::MainWindow()
 	edit->addAction("&Copy source", QKeySequence::Copy, this, &MainWindow::copySource);
 	edit->addAction("&Paste source", QKeySequence::Paste, this, &MainWindow::pasteSource);
 	edit->addAction("&Duplicate source", QKeySequence(Qt::CTRL | Qt::Key_D), this, &MainWindow::duplicateSource);
+	edit->addSeparator();
+	edit->addAction("Add &overlay scene...", this, &MainWindow::addOverlayScene)
+		->setToolTip("Starting soon, Be right back, Stream ending or a Countdown");
 	edit->addSeparator();
 	edit->addAction("&Transform...", QKeySequence(Qt::CTRL | Qt::Key_E), this, &MainWindow::transformSelected);
 	edit->addAction("&Fit to screen", QKeySequence(Qt::CTRL | Qt::Key_F), this, [this] {
@@ -426,6 +438,7 @@ MainWindow::MainWindow()
 	});
 	connect(&m_rec, &Recorder::replayStopped, this, [this] { setReplayUi(m_vertical.active()); });
 	connect(&m_vertical, &VerticalClip::clipSaved, this, &MainWindow::onShortSaved);
+	connect(m_clips, &ClipsPanel::editRequested, this, [this](const QString &path) { openClipEditor(path, true); });
 
 	// The vertical Shorts view follows whichever scene is on air.
 	ObsCore::instance().setProgramHook([this](obs_scene_t *scene) { m_vertical.programChanged(scene); });
@@ -491,36 +504,68 @@ void MainWindow::buildToolbar()
 	bar->setMovable(false);
 	bar->setIconSize(QSize(22, 22));
 
+	// Related controls sit together in a rounded capsule so the bar reads as a few clusters, not a row of buttons.
+	auto capsule = [bar](std::initializer_list<QWidget *> widgets, const char *name = "barGroup") {
+		auto *f = new QFrame;
+		f->setObjectName(name);
+		auto *h = new QHBoxLayout(f);
+		h->setContentsMargins(4, 4, 4, 4);
+		h->setSpacing(3);
+		for (QWidget *w : widgets)
+			h->addWidget(w);
+		bar->addWidget(f);
+		return f;
+	};
+	auto actionButton = [this](const QString &text, auto slot, const QString &tip) {
+		auto *act = new QAction(text, this);
+		act->setToolTip(tip);
+		connect(act, &QAction::triggered, this, slot);
+		auto *b = new QToolButton;
+		b->setObjectName("barBtn");
+		b->setDefaultAction(act);
+		b->setCursor(Qt::PointingHandCursor);
+		return b;
+	};
+
 	auto *logo = new QLabel;
-	logo->setPixmap(QIcon(":/logo").pixmap(28, 28));
-	logo->setContentsMargins(6, 0, 6, 0);
+	logo->setPixmap(QIcon(":/logo").pixmap(30, 30));
+	logo->setContentsMargins(4, 0, 10, 0);
 	logo->setToolTip(QString("RareStudio %1").arg(RARESTUDIO_VERSION));
 	bar->addWidget(logo);
-	bar->addAction("+ Scene", this, &MainWindow::addScene);
-	bar->addAction("+ Source", this, &MainWindow::addSourceDialog);
+
+	capsule({actionButton("+ Scene", &MainWindow::addScene, "Add a scene"),
+		 actionButton("+ Source", &MainWindow::addSourceDialog, "Add a source to this scene")});
+
 	m_studioBtn = new QPushButton("Studio Mode");
+	m_studioBtn->setObjectName("barToggle");
 	m_studioBtn->setCheckable(true);
+	m_studioBtn->setCursor(Qt::PointingHandCursor);
 	m_studioBtn->setToolTip("Edit one scene while another is live, then press Transition to send it on air");
 	bar->addWidget(m_studioBtn);
 	connect(m_studioBtn, &QPushButton::toggled, this, &MainWindow::setStudio);
-	bar->addSeparator();
 
 	// Scene transition: how the picture changes when you switch scenes. The list comes from the
 	// transition manager (built-ins, RareStudio's own, and any stingers you add).
-	auto &tm = TransitionManager::instance();
+	auto *transIcon = new QLabel(QString::fromUtf8("\xE2\x87\x84")); // ⇄
+	transIcon->setObjectName("barCaption");
+	transIcon->setToolTip("Scene transition");
 	auto *trans = new QComboBox;
-	trans->setMinimumWidth(190);
+	trans->setObjectName("barCombo");
+	trans->setMinimumWidth(150);
 	trans->setToolTip("Scene transition");
 	auto *ms = new QSpinBox;
+	ms->setObjectName("barSpin");
 	ms->setRange(0, 5000);
 	ms->setSingleStep(50);
 	ms->setSuffix(" ms");
+	ms->setFixedWidth(84);
 	ms->setToolTip("Transition length");
-	auto *cfg = new QPushButton("Edit\u2026");
+	auto *cfg = new QToolButton;
+	cfg->setObjectName("barBtn");
+	cfg->setText("Edit…");
+	cfg->setCursor(Qt::PointingHandCursor);
 	cfg->setToolTip("Transitions & stingers: tune, add, set per-scene overrides");
-	bar->addWidget(trans);
-	bar->addWidget(ms);
-	bar->addWidget(cfg);
+	capsule({transIcon, trans, ms, cfg});
 
 	// Re-reads the manager into the widgets without triggering their change handlers.
 	auto syncTransitionUi = [trans, ms] {
@@ -543,35 +588,34 @@ void MainWindow::buildToolbar()
 		TransitionManager::instance().setMs(trans->currentData().toString(), v);
 		Autosave::touch();
 	});
-	connect(cfg, &QPushButton::clicked, this, [this, syncTransitionUi] {
+	connect(cfg, &QToolButton::clicked, this, [this, syncTransitionUi] {
 		TransitionsDialog dlg(this);
 		connect(&dlg, &TransitionsDialog::changed, this, syncTransitionUi);
 		dlg.exec();
 		syncTransitionUi();
 		Autosave::touch();
 	});
-	bar->addSeparator();
 
 	// Recording and instant replay ("clip") controls.
 	m_recBtn = new QPushButton("● Rec");
+	m_recBtn->setObjectName("recBtn");
 	m_recBtn->setCheckable(true);
 	m_recBtn->setToolTip("Record to a file");
 	m_pauseBtn = new QPushButton("❚❚");
-	m_pauseBtn->setCheckable(true); // shown only while recording (through its toolbar action, below)
+	m_pauseBtn->setObjectName("capBtn");
+	m_pauseBtn->setCheckable(true);
+	m_pauseBtn->setVisible(false); // shown only while recording
 	m_replayBtn = new QPushButton("Replay");
+	m_replayBtn->setObjectName("capBtn");
 	m_replayBtn->setCheckable(true);
 	m_replayBtn->setToolTip("Keep the last seconds in memory so you can save a clip after something happens");
 	m_clipBtn = new QPushButton("Clip!");
+	m_clipBtn->setObjectName("capBtn");
 	m_clipBtn->setEnabled(false);
 	m_clipBtn->setToolTip("Save the last seconds as a clip");
-	// A toolbar hides a widget through the action addWidget returns, not the widget itself.
-	for (auto *b : {m_recBtn, m_pauseBtn, m_replayBtn, m_clipBtn}) {
-		QAction *a = bar->addWidget(b);
-		if (b == m_pauseBtn) {
-			m_pauseAction = a;
-			a->setVisible(false);
-		}
-	}
+	for (auto *b : {m_recBtn, m_pauseBtn, m_replayBtn, m_clipBtn})
+		b->setCursor(Qt::PointingHandCursor);
+	capsule({m_recBtn, m_pauseBtn, m_replayBtn, m_clipBtn});
 	connect(m_recBtn, &QPushButton::clicked, this, &MainWindow::toggleRecord);
 	connect(m_pauseBtn, &QPushButton::clicked, this, &MainWindow::togglePause);
 	connect(m_replayBtn, &QPushButton::clicked, this, &MainWindow::toggleReplay);
@@ -588,7 +632,8 @@ void MainWindow::buildToolbar()
 
 	m_stats = new QLabel;
 	m_stats->setObjectName("stats");
-	bar->addWidget(m_stats);
+	m_stats->setTextFormat(Qt::RichText);
+	capsule({m_stats}, "statsGroup");
 
 	m_goLive = new QPushButton("Go Live");
 	m_goLive->setObjectName("goLive");
@@ -605,10 +650,13 @@ void MainWindow::updateStats()
 	const double ramMb = pmc.PrivateUsage / (1024.0 * 1024.0);
 	const double cpu = m_cpu ? os_cpu_usage_info_query(m_cpu) : 0.0;
 
-	QString text = QString("CPU %1%   RAM %2 MB   %3 fps")
-			       .arg(cpu, 0, 'f', 1)
-			       .arg(ramMb, 0, 'f', 0)
-			       .arg(obs_get_active_fps(), 0, 'f', 1);
+	// A muted label in front of each bright value.
+	auto stat = [](const QString &label, const QString &value, const char *colour = "#ececf4") {
+		return QString("<span style='color:#6f6f86'>%1</span>&nbsp;<b style='color:%2'>%3</b>").arg(label, colour, value);
+	};
+	const QString gap = "&nbsp;&nbsp;&nbsp;";
+	QString text = stat("CPU", QString("%1%").arg(cpu, 0, 'f', 1)) + gap + stat("RAM", QString("%1 MB").arg(ramMb, 0, 'f', 0)) +
+		       gap + stat("FPS", QString::number(obs_get_active_fps(), 'f', 0));
 
 	auto clock = [](qint64 t) {
 		return QString("%1:%2:%3")
@@ -631,7 +679,8 @@ void MainWindow::updateStats()
 			m_kbps = (s.bytes - m_lastBytes) * 8.0 / (now - m_lastBytesMs); // bytes*8/ms = kbit/s
 		m_lastBytes = s.bytes;
 		m_lastBytesMs = now;
-		text += QString("   ↑ %1 kbps   dropped %2/%3").arg(m_kbps, 0, 'f', 0).arg(s.dropped).arg(s.total);
+		text += gap + stat("↑", QString("%1 kbps").arg(m_kbps, 0, 'f', 0)) + gap +
+			stat("DROPPED", QString("%1/%2").arg(s.dropped).arg(s.total), s.dropped ? "#f87171" : "#ececf4");
 	} else {
 		m_lastBytesMs = 0;
 	}
@@ -705,7 +754,7 @@ void MainWindow::syncPauseButton()
 	const bool shared = m_stream.live() || m_rec.replayActive();
 	if (shared && m_rec.paused())
 		m_rec.setPaused(false);
-	m_pauseAction->setVisible(rec);
+	m_pauseBtn->setVisible(rec);
 	m_pauseBtn->setEnabled(!shared);
 	QSignalBlocker b(m_pauseBtn);
 	m_pauseBtn->setChecked(m_rec.paused());
@@ -792,6 +841,10 @@ void MainWindow::onShortSaved(const QString &path)
 {
 	const int id = m_clips->add("Short saved: " + QFileInfo(path).fileName(), path);
 	statusBar()->showMessage("Short saved: " + QDir::toNativeSeparators(path), 10000);
+	if (QSettings().value("clips/review", true).toBool()) { // look it over (and trim, balance audio) before it goes anywhere
+		openClipEditor(path, true);
+		return;
+	}
 	if (!QSettings().value("clips/upload", false).toBool())
 		return;
 	if (!Accounts::instance().googleConnected()) {
@@ -801,17 +854,39 @@ void MainWindow::onShortSaved(const QString &path)
 	uploadShort(id, path);
 }
 
-void MainWindow::uploadShort(int panelId, const QString &path)
+void MainWindow::openClipEditor(const QString &path, bool offerUpload)
 {
 	QSettings s;
 	QString title = s.value("clips/title", "Clip {date} #Shorts").toString();
+	const QDateTime now = QDateTime::currentDateTime();
+	title.replace("{date}", now.toString("yyyy-MM-dd")).replace("{time}", now.toString("HH:mm"));
+	auto *editor = new ClipEditor(path, title, s.value("clips/privacy", "private").toString(),
+				      offerUpload && Accounts::instance().googleConnected(), this);
+	if (!editor->valid()) {
+		delete editor;
+		return;
+	}
+	connect(editor, &ClipEditor::exported, this, [this](const QString &file, bool upload, const QString &t, const QString &priv) {
+		const int id = m_clips->add("Edited clip saved: " + QFileInfo(file).fileName(), file);
+		statusBar()->showMessage("Edited clip saved: " + QDir::toNativeSeparators(file), 10000);
+		if (upload)
+			uploadShort(id, file, t, priv);
+	});
+	editor->setWindowModality(Qt::NonModal); // keep streaming while you review
+	editor->show();
+}
+
+void MainWindow::uploadShort(int panelId, const QString &path, const QString &titleOverride, const QString &privacyOverride)
+{
+	QSettings s;
+	QString title = titleOverride.isEmpty() ? s.value("clips/title", "Clip {date} #Shorts").toString() : titleOverride;
 	const QDateTime now = QDateTime::currentDateTime();
 	title.replace("{date}", now.toString("yyyy-MM-dd")).replace("{time}", now.toString("HH:mm"));
 	if (!title.contains("#Shorts", Qt::CaseInsensitive))
 		title += " #Shorts";
 
 	UploadJob *job = Accounts::instance().uploadShort(path, title, "Clipped live with RareStudio #Shorts",
-							  s.value("clips/privacy", "private").toString());
+							  privacyOverride.isEmpty() ? s.value("clips/privacy", "private").toString() : privacyOverride);
 	m_clips->update(panelId, "Uploading Short... 0%", path);
 	connect(job, &UploadJob::progress, this, [this, panelId, path](qint64 sent, qint64 total) {
 		m_clips->update(panelId, QString("Uploading Short... %1%").arg(total > 0 ? int(sent * 100 / total) : 0), path);
@@ -955,7 +1030,7 @@ void MainWindow::applyDefaultDockSizes()
 	if (scenes && stream)
 		resizeDocks({scenes, stream}, {280, 380}, Qt::Horizontal);
 	if (mixer)
-		resizeDocks({mixer}, {240}, Qt::Vertical);
+		resizeDocks({mixer}, {300}, Qt::Vertical);
 	if (stream)
 		stream->raise();
 }
@@ -1019,6 +1094,37 @@ void MainWindow::buildScenesDock(const QStringList &order)
 		refreshSources();
 		Autosave::touch(); // reopen on the scene you were on
 	});
+}
+
+// Starting soon / BRB / Stream ending / Countdown: a scene holding one full-canvas browser source.
+void MainWindow::addOverlayScene()
+{
+	Overlays::Spec spec;
+	if (!Overlays::ask(this, [](const QString &n) { return nameTaken(n) || nameTaken(n + " overlay"); }, &spec))
+		return;
+	ObsCore &core = ObsCore::instance();
+	if (!core.createScene(spec.sceneName))
+		return;
+	m_scenes->addItem(spec.sceneName);
+	m_scenes->setCurrentRow(m_scenes->count() - 1); // makes it the scene sources are added to
+
+	const QString sourceName = spec.sceneName + " overlay";
+	if (obs_source_t *src = core.addSource("browser_source", sourceName)) {
+		obs_data_t *s = obs_data_create();
+		obs_data_set_string(s, "url", spec.url.toUtf8().constData());
+		obs_data_set_int(s, "width", core.canvasWidth());
+		obs_data_set_int(s, "height", core.canvasHeight());
+		obs_data_set_int(s, "fps", 30);
+		obs_data_set_string(s, "css", ""); // the page paints its own background
+		obs_source_update(src, s);
+		obs_data_release(s);
+		if (obs_scene_t *scene = core.currentScene())
+			if (obs_sceneitem_t *item = obs_scene_find_source(scene, sourceName.toUtf8().constData()))
+				ObsCore::fitToCanvas(item);
+		obs_source_release(src);
+		refreshSources();
+	}
+	Autosave::touch();
 }
 
 void MainWindow::addScene()
@@ -1225,51 +1331,10 @@ void MainWindow::addSourceDialog()
 	if (!ObsCore::instance().currentScene())
 		return;
 
-	QDialog dlg(this);
-	dlg.setWindowTitle("Add source");
-	dlg.resize(460, 480);
-	auto *types = new QListWidget;
-	types->setObjectName("typeList");
-	for (const auto &t : kSourceTypes) {
-		const char *dn = obs_source_get_display_name(t.id);
-		if (!dn)
-			continue; // plugin not available on this machine
-		auto *it = new QListWidgetItem(QString::fromUtf8(dn) + "\n" + QString::fromUtf8(t.blurb));
-		it->setData(Qt::UserRole, QByteArray(t.id));
-		it->setData(Qt::UserRole + 1, QString::fromUtf8(dn));
-		types->addItem(it);
-	}
-	types->setCurrentRow(0);
-	auto *name = new QLineEdit;
-	auto *box = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-	box->button(QDialogButtonBox::Ok)->setText("Add");
-	auto *form = new QFormLayout;
-	form->addRow("Name", name);
-	auto *lay = new QVBoxLayout(&dlg);
-	lay->setContentsMargins(16, 16, 16, 12);
-	lay->setSpacing(12);
-	lay->addWidget(types, 1);
-	lay->addLayout(form);
-	lay->addWidget(box);
-
-	// The name follows the type until you type your own.
-	bool customName = false;
-	auto suggest = [&] {
-		if (!customName && types->currentItem())
-			name->setText(uniqueName(types->currentItem()->data(Qt::UserRole + 1).toString()));
-	};
-	suggest();
-	connect(name, &QLineEdit::textEdited, &dlg, [&] { customName = true; });
-	connect(types, &QListWidget::currentRowChanged, &dlg, suggest);
-	connect(types, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
-	connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-	connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-	if (dlg.exec() != QDialog::Accepted || !types->currentItem())
+	QByteArray id;
+	QString finalName;
+	if (!pickSource(this, uniqueName, &id, &finalName))
 		return;
-
-	const QByteArray id = types->currentItem()->data(Qt::UserRole).toByteArray();
-	const QString wanted = name->text().trimmed();
-	const QString finalName = uniqueName(wanted.isEmpty() ? types->currentItem()->data(Qt::UserRole + 1).toString() : wanted);
 
 	if (obs_source_t *src = ObsCore::instance().addSource(id.constData(), finalName)) {
 		refreshSources();
@@ -1415,8 +1480,10 @@ void MainWindow::buildMixerDock()
 
 	ObsCore &core = ObsCore::instance();
 	core.setupDefaultAudio();
-	m_mixer->addStrip("Desktop Audio", core.desktopAudio());
-	m_mixer->addStrip("Mic", core.micAudio());
+	// Named after the source: with a GoXLR they become "System" and "Chat Mic".
+	for (obs_source_t *src : {core.desktopAudio(), core.micAudio()})
+		if (src)
+			m_mixer->addStrip(QString::fromUtf8(obs_source_get_name(src)), src);
 	connect(m_mixer, &MixerPanel::filtersRequested, this, [this](obs_source_t *src) {
 		FiltersDialog(src, this).exec();
 		Autosave::touch();
@@ -1799,6 +1866,85 @@ void MainWindow::toggleLockSelected()
 		obs_sceneitem_set_locked(item, !obs_sceneitem_locked(item));
 		obs_sceneitem_release(item);
 		Autosave::touch();
+	}
+}
+
+// Scene collections: pick one to switch (RareStudio saves and restarts onto it), or manage them.
+void MainWindow::buildCollectionsMenu(QMenu *menu)
+{
+	connect(menu, &QMenu::aboutToShow, this, [this, menu] {
+		menu->clear();
+		const QString current = Collections::active();
+		auto *group = new QActionGroup(menu);
+		for (const QString &name : Collections::list()) {
+			QAction *a = menu->addAction(name);
+			a->setCheckable(true);
+			a->setChecked(name.compare(current, Qt::CaseInsensitive) == 0);
+			group->addAction(a);
+			connect(a, &QAction::triggered, this, [this, name] { switchCollection(name); });
+		}
+		menu->addSeparator();
+		auto ask = [this](const QString &title, const QString &initial = {}) {
+			bool ok = false;
+			const QString n = QInputDialog::getText(this, title, "Name:", QLineEdit::Normal, initial, &ok).trimmed();
+			return ok ? n : QString();
+		};
+		auto fail = [this](const QString &msg) {
+			if (!msg.isEmpty())
+				QMessageBox::warning(this, "Scene collection", msg);
+			return !msg.isEmpty();
+		};
+		menu->addAction("New collection...", this, [=] {
+			const QString n = ask("New scene collection");
+			if (n.isEmpty())
+				return;
+			persistAll();
+			if (!fail(Collections::create(n)))
+				switchCollection(n);
+		});
+		menu->addAction("Duplicate this collection...", this, [=] {
+			const QString n = ask("Duplicate scene collection", Collections::active() + " copy");
+			if (n.isEmpty())
+				return;
+			persistAll(); // the copy is of what is on disk
+			if (!fail(Collections::duplicate(Collections::active(), n)))
+				switchCollection(n);
+		});
+		menu->addAction("Rename this collection...", this, [=] {
+			const QString n = ask("Rename scene collection", Collections::active());
+			if (n.isEmpty() || n == Collections::active())
+				return;
+			persistAll();
+			if (!fail(Collections::rename(Collections::active(), n)))
+				setWindowTitle(QString("RareStudio - %1").arg(Collections::active()));
+		});
+		QMenu *del = menu->addMenu("Delete collection");
+		for (const QString &name : Collections::list()) {
+			if (name.compare(current, Qt::CaseInsensitive) == 0)
+				continue;
+			del->addAction(name, this, [=] {
+				if (QMessageBox::question(this, "Delete collection", QString("Delete \"%1\" and all its scenes? This cannot be undone.").arg(name)) == QMessageBox::Yes)
+					fail(Collections::remove(name));
+			});
+		}
+		del->setEnabled(!del->isEmpty());
+		menu->addAction("Open collections folder", this, [] {
+			QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(Collections::fileFor("x")).absolutePath()));
+		});
+	});
+}
+
+void MainWindow::switchCollection(const QString &name)
+{
+	if (name.compare(Collections::active(), Qt::CaseInsensitive) == 0)
+		return;
+	persistAll(); // closeEvent saves again, after asking first if you are live
+	const QString previous = Collections::active();
+	Collections::setActive(name);
+	m_restarting = true;
+	if (!close()) { // cancelled (still live): stay where you were
+		Collections::setActive(previous);
+		m_restarting = false;
 	}
 }
 

@@ -2,6 +2,15 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network WebEngineWidgets)
 
 add_executable(RareStudioApp WIN32
   main.cpp
+  Changelog.h Changelog.cpp
+  AudioTracks.h AudioTracks.cpp
+  AudioOut.h AudioOut.cpp
+  ClipEditor.h ClipEditor.cpp
+  ClipMedia.h ClipMedia.cpp
+  Collections.h Collections.cpp
+  Overlays.h Overlays.cpp
+  CrashReport.h CrashReport.cpp
+  SplashScreen.h SplashScreen.cpp
   Autosave.h Autosave.cpp
   UiBits.h UiBits.cpp
   ObsCore.h ObsCore.cpp
@@ -10,6 +19,8 @@ add_executable(RareStudioApp WIN32
   MixerPanel.h MixerPanel.cpp
   AudioPresets.h AudioPresets.cpp
   PropertiesDialog.h PropertiesDialog.cpp
+  BrowserSource.h BrowserSource.cpp
+  SourcePicker.h SourcePicker.cpp
   TransformDialog.h TransformDialog.cpp
   EncoderPool.h EncoderPool.cpp
   Recorder.h Recorder.cpp
@@ -18,7 +29,7 @@ add_executable(RareStudioApp WIN32
   RareTransitions.h RareTransitions.cpp
   TransitionManager.h TransitionManager.cpp
   TransitionsDialog.h TransitionsDialog.cpp
-  SelfTest.h SelfTest.cpp
+  SelfTest.h SelfTest.cpp SelfTestClips.cpp
   VerticalClip.h VerticalClip.cpp
   Accounts.h Accounts.cpp
   Secrets.h Secrets.cpp
@@ -33,6 +44,7 @@ add_executable(RareStudioApp WIN32
 
 target_compile_definitions(RareStudioApp PRIVATE
   RARESTUDIO_VERSION="${PROJECT_VERSION}"
+  RARESTUDIO_BUILD="${RARESTUDIO_BUILD}"
   UNICODE _UNICODE NOMINMAX)
 
 # Release builds still get a PDB (kept in the build tree, never staged) so crash dumps resolve to source lines.
@@ -43,9 +55,18 @@ target_include_directories(RareStudioApp PRIVATE
   "${OBS_SOURCE_DIR}/libobs"
   "${OBS_BUILD_DIR}/config")
 
+# FFmpeg (from OBS's dependency pack) reads, previews and exports clips.
+file(GLOB OBS_DEP_ROOTS "${OBS_SOURCE_DIR}/.deps/obs-deps-*-x64")
+list(FILTER OBS_DEP_ROOTS EXCLUDE REGEX "obs-deps-qt6")
+list(GET OBS_DEP_ROOTS 0 OBS_DEPS_ROOT)
+target_include_directories(RareStudioApp PRIVATE "${OBS_DEPS_ROOT}/include")
+set(FFMPEG_LIBS "${OBS_DEPS_ROOT}/lib/avformat.lib" "${OBS_DEPS_ROOT}/lib/avcodec.lib" "${OBS_DEPS_ROOT}/lib/avutil.lib"
+  "${OBS_DEPS_ROOT}/lib/swresample.lib" "${OBS_DEPS_ROOT}/lib/swscale.lib")
+
 target_link_libraries(RareStudioApp PRIVATE
-  Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets crypt32 psapi
-  "${OBS_BUILD_DIR}/libobs/Release/obs.lib")
+  Qt6::Widgets Qt6::Network Qt6::WebEngineWidgets crypt32 psapi ole32
+  "${OBS_BUILD_DIR}/libobs/Release/obs.lib"
+  ${FFMPEG_LIBS})
 
 # Stage a runnable tree: <build>/stage = Qt + OBS runtime + our exe.
 set(STAGE "${CMAKE_BINARY_DIR}/stage")

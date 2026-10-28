@@ -46,5 +46,6 @@ private:
 	obs_scene_t *m_live = nullptr;       // the scene currently on air (not owned)
 	obs_encoder_t *m_video = nullptr;
 	obs_encoder_t *m_audio = nullptr;
+	obs_encoder_t *m_trackAudio[3] = {}; // tracks 2-4, see AudioTracks.h
 	obs_output_t *m_output = nullptr;
 };

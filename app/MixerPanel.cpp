@@ -5,6 +5,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QAbstractSpinBox>
 #include <QDoubleSpinBox>
 #include <QFontMetrics>
 #include <QFrame>
@@ -65,8 +66,8 @@ double mulToDb(float mul)
 
 LevelMeter::LevelMeter(QWidget *parent) : QWidget(parent)
 {
-	setFixedHeight(32);
-	setMinimumWidth(120);
+	setFixedWidth(26);
+	setMinimumHeight(90);
 	setToolTip("Click to clear the clip indicator");
 	m_clock.start();
 }
@@ -121,10 +122,12 @@ void LevelMeter::mousePressEvent(QMouseEvent *)
 void LevelMeter::paintEvent(QPaintEvent *)
 {
 	QPainter p(this);
-	const int ledW = 9, gap = 4;
-	const int barW = width() - ledW - gap;
-	const int barH = 8;
-	auto xFor = [&](float db) { return int((std::clamp(db, kFloor, 0.0f) - kFloor) / -kFloor * barW); };
+	const int ledH = 5, gap = 3;
+	const int top = ledH + gap;
+	const int barH = height() - top;
+	const int barW = 8;
+	// 0 dBFS sits at the top of the bar, the floor at the bottom.
+	auto yFor = [&](float db) { return top + int((1.0f - (std::clamp(db, kFloor, 0.0f) - kFloor) / -kFloor) * barH); };
 
 	struct Zone {
 		float from, to;
@@ -134,43 +137,120 @@ void LevelMeter::paintEvent(QPaintEvent *)
 			      {-6.0f, 0.0f, QColor("#ef4444")}};
 
 	for (int c = 0; c < 2; ++c) {
-		const int y = 1 + c * (barH + 2);
+		const int x = 1 + c * (barW + 2);
 		for (const Zone &z : zones) {
-			const int x0 = xFor(z.from), x1 = xFor(z.to);
+			const int yTop = yFor(z.to), yBot = yFor(z.from);
 			QColor off = z.on;
 			off.setAlpha(m_muted ? 18 : 45);
-			p.fillRect(x0, y, x1 - x0, barH, off);
-			const int fill = std::min(x1, xFor(m_shown[c]));
-			if (fill > x0) {
+			p.fillRect(x, yTop, barW, yBot - yTop, off);
+			const int fillTop = std::max(yTop, yFor(m_shown[c]));
+			if (fillTop < yBot) {
 				QColor on = m_muted ? QColor("#55556a") : z.on;
-				p.fillRect(x0, y, fill - x0, barH, on);
+				p.fillRect(x, fillTop, barW, yBot - fillTop, on);
 			}
 		}
 		if (!m_muted && m_hold[c] > kFloor + 1.0f) {
-			const int hx = std::min(barW - 2, xFor(m_hold[c]));
-			p.fillRect(hx, y, 2, barH, m_hold[c] >= -6.0f ? QColor("#fecaca") : QColor("#f0f0ff"));
+			const int hy = std::max(top, yFor(m_hold[c]) - 1);
+			p.fillRect(x, hy, barW, 2, m_hold[c] >= -6.0f ? QColor("#fecaca") : QColor("#f0f0ff"));
 		}
 	}
 
-	// Clip latch
-	const QRect led(barW + gap, 1, ledW, 2 * barH + 2);
-	p.fillRect(led, m_clip ? QColor("#ef4444") : QColor("#2c2c38"));
+	// Clip latch above the bars
+	p.fillRect(QRect(1, 0, 2 * barW + 2, ledH), m_clip ? QColor("#ef4444") : QColor("#2c2c38"));
 
-	// Scale
+	// Scale ticks to the right of the bars
+	p.setPen(QColor("#6a6a80"));
+	for (int db : {-60, -50, -40, -30, -20, -10, -6, -3, 0}) {
+		const int y = std::clamp(yFor(float(db)), top, height() - 1);
+		const bool major = db == 0 || db == -10 || db == -20 || db == -40 || db == -60;
+		p.drawLine(2 * barW + 4, y, 2 * barW + (major ? 8 : 6), y);
+	}
+}
+
+// ---- Fader ------------------------------------------------------------------------------------
+
+void Fader::moveTo(int y)
+{
+	const int span = std::max(1, trackBottom() - trackTop());
+	const double t = 1.0 - double(std::clamp(y, trackTop(), trackBottom()) - trackTop()) / span;
+	setValue(minimum() + int(std::lround(t * (maximum() - minimum()))));
+}
+
+void Fader::mousePressEvent(QMouseEvent *e)
+{
+	if (e->button() != Qt::LeftButton)
+		return;
+	m_drag = true;
+	setSliderDown(true);
+	moveTo(int(e->position().y()));
+}
+
+void Fader::mouseMoveEvent(QMouseEvent *e)
+{
+	if (m_drag)
+		moveTo(int(e->position().y()));
+}
+
+void Fader::mouseReleaseEvent(QMouseEvent *)
+{
+	m_drag = false;
+	setSliderDown(false);
+}
+
+void Fader::paintEvent(QPaintEvent *)
+{
+	QPainter p(this);
+	p.setRenderHint(QPainter::Antialiasing);
+	const int top = trackTop(), bottom = trackBottom();
+	const int span = std::max(1, bottom - top);
+	const double t = double(value() - minimum()) / std::max(1, maximum() - minimum());
+	const int hy = bottom - int(t * span);
+	const int cx = width() / 2 + 6;
+
+	// dB scale on the left, 0 dB emphasised
 	QFont f = font();
 	f.setPixelSize(9);
 	p.setFont(f);
-	p.setPen(QColor("#7a7a90"));
-	const int tickY = 2 * barH + 4;
-	for (int db : {-60, -50, -40, -30, -20, -10, -6, -3, 0}) {
-		const int x = xFor(float(db));
-		p.drawLine(x, tickY, x, tickY + 2);
-		const QString t = QString::number(db);
-		const int tw = p.fontMetrics().horizontalAdvance(t);
-		// Centred under the tick, except at the ends where it sits beside it (not on top of it).
-		const int tx = x - tw / 2 < 0 ? x + 3 : x + tw / 2 > barW ? x - tw - 3 : x - tw / 2;
-		p.drawText(tx, tickY + 3, tw + 2, 10, Qt::AlignLeft | Qt::AlignTop, t);
+	// Ticks always; labels only where they fit (0 dB first, then the ends, then the rest).
+	QList<int> labelled;
+	for (int db : {0, 12, -60, -12, -36, 6, -6, -24}) {
+		const int y = bottom - int((db - kMinDb) / (kMaxDb - kMinDb) * span);
+		p.setPen(db == 0 ? QColor("#c4b5fd") : QColor("#5e5e75"));
+		p.drawLine(cx - 15, y, cx - 10, y);
+		bool fits = true;
+		for (int other : labelled)
+			fits &= std::abs(other - y) >= 12;
+		if (!fits)
+			continue;
+		labelled << y;
+		const QString text = db == -60 ? QString::fromUtf8("-â") : QString::number(db);
+		p.drawText(QRect(0, y - 6, cx - 18, 12), Qt::AlignRight | Qt::AlignVCenter, text);
 	}
+
+	// Track and the lit part below the cap
+	p.setPen(Qt::NoPen);
+	p.setBrush(QColor("#0d0d13"));
+	p.drawRoundedRect(QRect(cx - 3, top - 2, 6, span + 4), 3, 3);
+	QLinearGradient lit(0, hy, 0, bottom);
+	lit.setColorAt(0, QColor("#c084fc"));
+	lit.setColorAt(1, QColor("#6d28d9"));
+	p.setBrush(isEnabled() ? QBrush(lit) : QBrush(QColor("#3a3a4c")));
+	p.drawRoundedRect(QRect(cx - 2, hy, 4, bottom - hy + 1), 2, 2);
+
+	// Cap
+	const QRect cap(cx - 13, hy - 9, 26, 18);
+	QLinearGradient g(cap.topLeft(), cap.bottomLeft());
+	g.setColorAt(0, QColor("#f4f1ff"));
+	g.setColorAt(0.5, QColor("#d9d2f5"));
+	g.setColorAt(1, QColor("#b4a8e0"));
+	p.setPen(QPen(hasFocus() || m_drag ? QColor("#ec4899") : QColor("#7c3aed"), 1.5));
+	p.setBrush(g);
+	p.drawRoundedRect(cap, 4, 4);
+	p.setPen(QPen(QColor("#2b1f4a"), 1.5));
+	p.drawLine(cap.left() + 4, hy, cap.right() - 4, hy);
+	p.setPen(QPen(QColor(0, 0, 0, 40), 1));
+	p.drawLine(cap.left() + 4, hy - 4, cap.right() - 4, hy - 4);
+	p.drawLine(cap.left() + 4, hy + 4, cap.right() - 4, hy + 4);
 }
 
 // ---- MixerStrip -------------------------------------------------------------------------------
@@ -178,42 +258,51 @@ void LevelMeter::paintEvent(QPaintEvent *)
 MixerStrip::MixerStrip(const QString &label, obs_source_t *source, QWidget *parent)
 	: QWidget(parent), m_ptr(source), m_weak(obs_source_get_weak_source(source))
 {
+	setFixedWidth(100);
 	auto *lay = new QVBoxLayout(this);
-	lay->setContentsMargins(8, 6, 8, 6);
-	lay->setSpacing(3);
+	lay->setContentsMargins(6, 8, 6, 8);
+	lay->setSpacing(6);
 
-	auto *top = new QHBoxLayout;
-	top->setSpacing(4);
-	m_name = new QLabel(label);
-	m_name->setStyleSheet("font-weight: 600; color: #e8e8f0;");
-	m_name->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	m_name = new QLabel;
+	m_name->setAlignment(Qt::AlignCenter);
+	m_name->setStyleSheet("font-weight: 700; color: #e8e8f0;");
+	m_name->setToolTip(label);
+	m_name->setText(QFontMetrics(m_name->font()).elidedText(label, Qt::ElideRight, 84));
+	lay->addWidget(m_name);
+
 	m_menuBtn = new QToolButton;
-	m_menuBtn->setText(QString::fromUtf8("\xE2\x8B\xAF")); // ⋯
+	m_menuBtn->setText(QString::fromUtf8("\xE2\x8B\xAF")); // ellipsis
 	m_menuBtn->setToolTip("Filters, device, monitoring, sync offset");
 	m_menuBtn->setPopupMode(QToolButton::InstantPopup);
-	m_menuBtn->setStyleSheet("QToolButton { background: #2c2c38; border: 1px solid #353544; border-radius: 6px; "
-				 "color: #e8e8f0; padding: 1px 8px; font-weight: 700; }"
+	m_menuBtn->setCursor(Qt::PointingHandCursor);
+	m_menuBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+	m_menuBtn->setStyleSheet("QToolButton { background: #23232f; border: 1px solid #353544; border-radius: 7px; "
+				 "color: #e8e8f0; padding: 3px 0; font-weight: 700; }"
 				 "QToolButton:hover { border-color: #7c3aed; }"
 				 "QToolButton::menu-indicator { image: none; }");
 	m_mute = new QPushButton("M");
 	m_mute->setCheckable(true);
 	m_mute->setToolTip("Mute");
-	m_mute->setFixedWidth(30);
-	m_mute->setStyleSheet("QPushButton { padding: 2px 0; font-weight: 700; }"
+	m_mute->setCursor(Qt::PointingHandCursor);
+	m_mute->setStyleSheet("QPushButton { padding: 3px 0; min-height: 0; font-weight: 700; border-radius: 7px; }"
 			      "QPushButton:checked { background: #dc2626; border-color: #dc2626; color: white; }");
-	top->addWidget(m_name, 1);
-	top->addWidget(m_menuBtn);
-	top->addWidget(m_mute);
-	lay->addLayout(top);
+	auto *buttons = new QHBoxLayout;
+	buttons->setSpacing(5);
+	buttons->addWidget(m_mute, 1);
+	buttons->addWidget(m_menuBtn, 1);
+	lay->addLayout(buttons);
 
+	// Meter and fader side by side, taking whatever height the dock gives them.
 	m_levels = new LevelMeter;
-	lay->addWidget(m_levels);
-
-	auto *bottom = new QHBoxLayout;
-	bottom->setSpacing(8);
-	m_fader = new Fader(Qt::Horizontal);
+	m_fader = new Fader;
 	m_fader->setRange(0, kFaderSteps);
 	m_fader->setToolTip("Volume (double-click for 0 dB)");
+	auto *mid = new QHBoxLayout;
+	mid->setSpacing(2);
+	mid->addWidget(m_levels);
+	mid->addWidget(m_fader, 1);
+	lay->addLayout(mid, 1);
+
 	m_db = new QDoubleSpinBox;
 	m_db->setRange(kMinDb, kMaxDb);
 	m_db->setDecimals(1);
@@ -221,10 +310,9 @@ MixerStrip::MixerStrip(const QString &label, obs_source_t *source, QWidget *pare
 	m_db->setSuffix(" dB");
 	m_db->setSpecialValueText("-inf dB");
 	m_db->setKeyboardTracking(false);
-	m_db->setFixedWidth(104);
-	bottom->addWidget(m_fader, 1);
-	bottom->addWidget(m_db);
-	lay->addLayout(bottom);
+	m_db->setAlignment(Qt::AlignCenter);
+	m_db->setButtonSymbols(QAbstractSpinBox::NoButtons);
+	lay->addWidget(m_db);
 
 	connect(m_fader, &QSlider::valueChanged, this, [this](int pos) { setDb(posToDb(pos), true); });
 	connect(m_fader, &Fader::resetRequested, this, [this] { setDb(0.0, true); });
@@ -360,8 +448,6 @@ void MixerStrip::syncFromSource()
 		m_lastMuted = muted;
 		m_levels->setMuted(muted);
 	}
-	if (m_name->toolTip().isEmpty())
-		m_name->setToolTip(QString::fromUtf8(obs_source_get_name(s.s)));
 }
 
 bool MixerStrip::alive() const
@@ -400,10 +486,10 @@ MixerPanel::MixerPanel(QWidget *parent) : QWidget(parent)
 	auto *scroll = new QScrollArea;
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
-	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 	auto *inner = new QWidget;
-	m_layout = new QVBoxLayout(inner);
-	m_layout->setContentsMargins(0, 0, 0, 0);
+	m_layout = new QHBoxLayout(inner);
+	m_layout->setContentsMargins(4, 0, 4, 0);
 	m_layout->setSpacing(0);
 	m_layout->addStretch();
 	scroll->setWidget(inner);
@@ -439,7 +525,7 @@ void MixerPanel::addStrip(const QString &label, obs_source_t *source)
 
 	// Hairline between strips
 	auto *line = new QFrame;
-	line->setFrameShape(QFrame::HLine);
+	line->setFrameShape(QFrame::VLine);
 	line->setStyleSheet("color: #2a2a35;");
 	strip->setProperty("divider", QVariant::fromValue<QObject *>(line));
 	m_layout->insertWidget(m_layout->count() - 1, line);

@@ -13,11 +13,12 @@ class QDoubleSpinBox;
 class QMenu;
 class QPushButton;
 class QToolButton;
+class QHBoxLayout;
 class QVBoxLayout;
 class QLabel;
 
-// Stereo dB meter: RMS-style bar with a held peak marker, a coloured scale and a clip latch
-// (click the meter to clear it).
+// Vertical stereo dB meter: two RMS-style bars with held peak markers, scale ticks and a clip latch
+// on top (click the meter to clear it).
 class LevelMeter : public QWidget {
 	Q_OBJECT
 public:
@@ -46,20 +47,32 @@ private:
 	qint64 m_last = 0;
 };
 
-// Fader that jumps to 0 dB on double click.
+// Console-style vertical fader: a lit track, dB scale beside it and a ridged cap. Double click jumps to 0 dB.
 class Fader : public QSlider {
 	Q_OBJECT
 public:
-	using QSlider::QSlider;
+	explicit Fader(QWidget *parent = nullptr) : QSlider(Qt::Vertical, parent) { setFocusPolicy(Qt::WheelFocus); }
+	QSize sizeHint() const override { return {48, 160}; }
+	QSize minimumSizeHint() const override { return {48, 90}; }
 signals:
 	void resetRequested();
 
 protected:
+	void paintEvent(QPaintEvent *) override;
+	void mousePressEvent(QMouseEvent *) override;
+	void mouseMoveEvent(QMouseEvent *) override;
+	void mouseReleaseEvent(QMouseEvent *) override;
 	void mouseDoubleClickEvent(QMouseEvent *) override { emit resetRequested(); }
+
+private:
+	void moveTo(int y);
+	int trackTop() const { return 12; }
+	int trackBottom() const { return height() - 12; }
+	bool m_drag = false;
 };
 
-// One strip per audio source: name, meter, fader with dB entry, mute and a menu
-// (filters, device properties, monitoring, sync offset).
+// One channel strip per audio source, like a mixing desk: name, mute and menu on top, meter beside a
+// vertical fader, dB entry underneath (menu: filters, device properties, monitoring, sync offset).
 class MixerStrip : public QWidget {
 	Q_OBJECT
 public:
@@ -106,8 +119,8 @@ public:
 	explicit MixerPanel(QWidget *parent = nullptr);
 	void addStrip(const QString &label, obs_source_t *source);
 
-	QSize sizeHint() const override { return {480, 230}; }        // two strips visible by default
-	QSize minimumSizeHint() const override { return {260, 110}; } // never smaller than one full strip
+	QSize sizeHint() const override { return {420, 290}; }        // a few strips visible by default
+	QSize minimumSizeHint() const override { return {120, 230}; } // never smaller than one full strip
 
 signals:
 	void filtersRequested(obs_source_t *source);
@@ -120,7 +133,7 @@ protected:
 private:
 	void syncSources(); // picks up app / media / browser audio added to scenes, drops removed ones
 
-	QVBoxLayout *m_layout;
+	QHBoxLayout *m_layout;
 	QList<MixerStrip *> m_strips;
 	QTimer m_timer; // polled only while the panel is visible
 	int m_ticks = 0;

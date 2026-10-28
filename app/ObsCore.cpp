@@ -1,11 +1,15 @@
 #include "ObsCore.h"
 
 #include "AudioPresets.h"
+#include "AudioTracks.h"
+#include "BrowserSource.h"
+#include "SplashScreen.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QProcess>
 #include <QSettings>
 
 #include <graphics/matrix4.h>
@@ -29,6 +33,27 @@ static void logHandler(int level, const char *fmt, va_list args, void *)
 	g_log->write(buf);
 	g_log->write("\n");
 	g_log->flush();
+	SplashScreen::pump(); // libobs logs as it loads each module: keeps the startup sequence moving
+}
+
+// Game Capture injects graphics-hook into the game. Store apps and sandboxed games refuse a DLL that
+// "ALL APPLICATION PACKAGES" can't read; OBS's installer grants that, so do the same once per install.
+static void allowHooksInSandboxes(const QString &root)
+{
+	const QString dir = root + "/data/obs-plugins/win-capture/";
+	QSettings st;
+	if (st.value("capture/hookAcl").toString() == dir)
+		return;
+	for (const char *dll : {"graphics-hook32.dll", "graphics-hook64.dll"}) {
+		const QString path = QDir::toNativeSeparators(dir + dll);
+		if (!QFile::exists(path))
+			continue;
+		QProcess p;
+		p.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a) { a->flags |= 0x08000000; }); // no console flash
+		p.start("icacls", {path, "/grant", "*S-1-15-2-1:(RX)", "*S-1-15-2-2:(RX)"});
+		p.waitForFinished(5000);
+	}
+	st.setValue("capture/hookAcl", dir);
 }
 
 bool ObsCore::applyVideo(int baseW, int baseH, int outW, int outH, int fps)
@@ -68,7 +93,10 @@ bool ObsCore::start(const QString &root, int baseW, int baseH, int outW, int out
 	base_set_log_handler(logHandler, nullptr);
 
 	m_error.clear();
-	if (!obs_startup("en-US", nullptr, nullptr)) {
+	// Plugins keep per-module state under here (Game Capture's compatibility list among it); without a
+	// path they write into whatever the working directory is.
+	const QByteArray cfgDir = QDir::fromNativeSeparators(logDir + "/plugin_config").toUtf8();
+	if (!obs_startup("en-US", cfgDir.constData(), nullptr)) {
 		m_error = "obs_startup failed";
 		return false;
 	}
@@ -93,6 +121,9 @@ bool ObsCore::start(const QString &root, int baseW, int baseH, int outW, int out
 	obs_add_module_path(bin.constData(), data.constData());
 	obs_load_all_modules();
 	obs_post_load_modules();
+	AudioTracks::install(); // sources made from now on feed the clip tracks (loaded ones: MainWindow)
+	BrowserSource::registerSource();
+	allowHooksInSandboxes(root);
 
 	m_running = true;
 	return true;
@@ -248,7 +279,15 @@ obs_source_t *ObsCore::addSource(const char *typeId, const QString &name)
 {
 	if (!m_scene)
 		return nullptr;
-	obs_source_t *src = obs_source_create(typeId, name.toUtf8().constData(), nullptr, nullptr);
+	// Game Capture's own default ("any fullscreen application") shows nothing for a windowed game or
+	// until you tab into a fullscreen one; start it on a specific window instead.
+	obs_data_t *defaults = nullptr;
+	if (!qstrcmp(typeId, "game_capture")) {
+		defaults = obs_data_create();
+		obs_data_set_string(defaults, "capture_mode", "window");
+	}
+	obs_source_t *src = obs_source_create(typeId, name.toUtf8().constData(), defaults, nullptr);
+	obs_data_release(defaults);
 	if (!src)
 		return nullptr;
 
@@ -405,6 +444,137 @@ void ObsCore::applyMonitoringDevice()
 	obs_set_audio_monitoring_device(name.constData(), id.constData());
 }
 
+namespace {
+struct AudioDevice {
+	QString name, id;
+};
+
+QList<AudioDevice> listAudioDevices(const char *type)
+{
+	QList<AudioDevice> out;
+	obs_properties_t *props = obs_get_source_properties(type);
+	if (!props)
+		return out;
+	if (obs_property_t *p = obs_properties_get(props, "device_id")) {
+		for (size_t i = 0, n = obs_property_list_item_count(p); i < n; ++i) {
+			const char *name = obs_property_list_item_name(p, i);
+			const char *id = obs_property_list_item_string(p, i);
+			if (name && id)
+				out.append({QString::fromUtf8(name), QString::fromUtf8(id)});
+		}
+	}
+	obs_properties_destroy(props);
+	return out;
+}
+
+// The GoXLR driver names its endpoints "<channel> (TC-HELICON GoXLR)".
+const AudioDevice *findGoXlr(const QList<AudioDevice> &devices, const QString &channel)
+{
+	for (const AudioDevice &d : devices)
+		if (d.name.contains("goxlr", Qt::CaseInsensitive) && d.name.startsWith(channel, Qt::CaseInsensitive))
+			return &d;
+	return nullptr;
+}
+
+void setDevice(obs_source_t *src, const QString &id)
+{
+	obs_data_t *s = obs_data_create();
+	obs_data_set_string(s, "device_id", id.toUtf8().constData());
+	obs_source_update(src, s);
+	obs_data_release(s);
+}
+
+bool usesDefaultDevice(obs_source_t *src)
+{
+	obs_data_t *s = obs_source_get_settings(src);
+	const bool def = QByteArray(obs_data_get_string(s, "device_id")) == "default";
+	obs_data_release(s);
+	return def;
+}
+} // namespace
+
+// The GoXLR's mixer channels are ordinary Windows audio devices. Each one becomes its own global audio
+// source, so the faders in the app's mixer move what goes to the stream, and the channel order matches the
+// hardware. Chat is added muted (it is usually kept off stream); Stream Mix, the hardware's own premix, is
+// added muted too, as a one-click alternative that would otherwise double up with the channels.
+struct GoXlrChannel {
+	const char *prefix; // endpoint name prefix
+	const char *label;
+	bool capture;       // recording device (wasapi_input_capture) rather than a playback loopback
+	int outputChannel;  // libobs output channel the source is assigned to
+	bool mutedByDefault;
+};
+static const GoXlrChannel kGoXlrExtras[] = {
+	{"Game", "Game", false, 3, false},
+	{"Music", "Music", false, 4, false},
+	{"Chat", "Chat", false, 5, true},
+	{"Sample", "Sample", false, 6, false},
+	{"Broadcast Stream Mix", "Stream Mix", true, 7, true},
+};
+
+void ObsCore::setupGoXlr()
+{
+	QSettings s;
+	bool anyRestored = false;
+
+	// Sources restored from the saved collection only need their output channel back.
+	for (const GoXlrChannel &c : kGoXlrExtras)
+		if (obs_source_t *src = obs_get_source_by_name(c.label)) {
+			obs_set_output_source(uint32_t(c.outputChannel), src);
+			obs_source_release(src);
+			anyRestored = true;
+		}
+	// The flag alone is not enough: a collection that was reset or replaced after the flag was set has none
+	// of the channels, so set them up again.
+	if (s.value("audio/goxlr_v1", false).toBool() && anyRestored)
+		return;
+
+	const QList<AudioDevice> outs = listAudioDevices("wasapi_output_capture");
+	const QList<AudioDevice> ins = listAudioDevices("wasapi_input_capture");
+	const AudioDevice *system = findGoXlr(outs, "System");
+	const AudioDevice *chatMic = findGoXlr(ins, "Chat Mic");
+	if (!system && !chatMic)
+		return; // no GoXLR (or its driver is not running): leave the defaults, look again next start
+
+	auto retarget = [](obs_source_t *src, const AudioDevice *dev, const char *label) {
+		if (!src || !dev || !usesDefaultDevice(src))
+			return;
+		setDevice(src, dev->id);
+		if (obs_source_t *clash = obs_get_source_by_name(label))
+			obs_source_release(clash);
+		else
+			obs_source_set_name(src, label);
+	};
+	retarget(m_mic, chatMic, "Chat Mic");
+	retarget(m_desktop, system, "System");
+
+	for (const GoXlrChannel &c : kGoXlrExtras) {
+		const AudioDevice *dev = findGoXlr(c.capture ? ins : outs, c.prefix);
+		if (!dev)
+			continue; // e.g. a GoXLR Mini has no Sample channel
+		bool fresh = false;
+		obs_source_t *src = obs_get_source_by_name(c.label);
+		if (!src) {
+			obs_data_t *st = obs_data_create();
+			obs_data_set_string(st, "device_id", dev->id.toUtf8().constData());
+			src = obs_source_create(c.capture ? "wasapi_input_capture" : "wasapi_output_capture", c.label, st,
+						nullptr);
+			obs_data_release(st);
+			fresh = true;
+		}
+		if (!src)
+			continue;
+		if (fresh) {
+			obs_source_set_muted(src, c.mutedByDefault);
+			if (!c.capture)
+				AudioPresets::applyDesktopChain(src);
+		}
+		obs_set_output_source(uint32_t(c.outputChannel), src);
+		obs_source_release(src);
+	}
+	s.setValue("audio/goxlr_v1", true);
+}
+
 // First run: a fresh mic gets the voice chain and desktop audio sits under it with a limiter. Collections
 // saved before these defaults existed get the same filters once, but only on sources with no filters.
 void ObsCore::setupDefaultAudio()
@@ -431,6 +601,7 @@ void ObsCore::setupDefaultAudio()
 			AudioPresets::applyDesktopChain(m_desktop);
 		s.setValue("audio/defaults_v1", true);
 	}
+	setupGoXlr();
 	applyMonitoringDevice();
 }
 

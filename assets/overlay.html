@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>RareStudio overlay</title>
+<!--
+  RareStudio scene overlay: Starting soon, Be right back, Stream ending, Countdown.
+  Driven by the address it is opened with:
+    overlay.html?mode=starting|brb|ending|countdown
+                &title=...&sub=...&minutes=5&at=20:00&done=We%20are%20live
+  minutes counts down from when the scene goes on air; at= counts down to a clock time instead.
+  RareStudio rewrites this file on every start; make a copy to customise it.
+-->
+<style>
+  :root { --a1: #7c3aed; --a2: #22d3ee; --a3: #e879f9; }
+  body.brb    { --a1: #f59e0b; --a2: #f43f5e; --a3: #a78bfa; }
+  body.ending { --a1: #34d399; --a2: #38bdf8; --a3: #7c3aed; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #070710;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #f4f4fc; }
+  .sky { position: absolute; inset: 0; overflow: hidden; }
+  .blob { position: absolute; width: 70vmax; height: 70vmax; border-radius: 50%; filter: blur(9vmin);
+    opacity: .5; mix-blend-mode: screen; will-change: transform; }
+  .b1 { background: radial-gradient(circle, var(--a1), transparent 65%); left: -20%; top: -35%; animation: d1 19s ease-in-out infinite alternate; }
+  .b2 { background: radial-gradient(circle, var(--a2), transparent 65%); right: -25%; top: -20%; animation: d2 23s ease-in-out infinite alternate; }
+  .b3 { background: radial-gradient(circle, var(--a3), transparent 65%); left: 15%; bottom: -55%; animation: d3 27s ease-in-out infinite alternate; opacity: .38; }
+  @keyframes d1 { to { transform: translate(28vw, 14vh) scale(1.2); } }
+  @keyframes d2 { to { transform: translate(-30vw, 20vh) scale(.9); } }
+  @keyframes d3 { to { transform: translate(24vw, -16vh) scale(1.15); } }
+  .curtain { position: absolute; inset: 0; opacity: .55; mix-blend-mode: screen;
+    background: repeating-linear-gradient(90deg, transparent 0 1.6vw, rgba(255,255,255,.05) 1.6vw 2.4vw, transparent 2.4vw 5vw);
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 70%); animation: sway 12s ease-in-out infinite alternate; }
+  @keyframes sway { from { transform: translateX(-2vw) skewX(-2deg); } to { transform: translateX(2vw) skewX(2deg); } }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .stage { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .logo { width: 14vmin; height: 14vmin; border-radius: 3vmin; box-shadow: 0 0 6vmin color-mix(in srgb, var(--a1) 70%, transparent);
+    animation: float 6s ease-in-out infinite alternate; margin-bottom: 4vmin; }
+  @keyframes float { to { transform: translateY(-1.2vmin); } }
+  h1 { margin: 0; font-size: 9.5vmin; font-weight: 700; letter-spacing: 1.1vmin; text-shadow: 0 0 4vmin color-mix(in srgb, var(--a2) 55%, transparent); }
+  h1 span { display: inline-block; animation: rise .7s cubic-bezier(.2,.8,.2,1) backwards; }
+  @keyframes rise { from { opacity: 0; transform: translateY(2vmin); } }
+  .sub { margin-top: 2.2vmin; font-size: 3.2vmin; letter-spacing: .5vmin; color: #b9b9d8; min-height: 4vmin; }
+  .timer { margin-top: 5vmin; font-size: 15vmin; font-weight: 300; letter-spacing: 1vmin; font-variant-numeric: tabular-nums;
+    background: linear-gradient(90deg, var(--a2), var(--a3)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .timer.done { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .55; } }
+  .timer:empty { display: none; }
+  .bar { position: absolute; left: 0; bottom: 0; height: .8vmin; width: 100%; background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3)); transform-origin: left; transform: scaleX(0); }
+</style>
+</head>
+<body>
+<div class="sky"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div><div class="curtain"></div></div>
+<canvas id="stars"></canvas>
+<div class="stage">
+  <img class="logo" src="logo.png" alt="" onerror="this.style.display='none'">
+  <h1 id="title"></h1>
+  <div class="sub" id="sub"></div>
+  <div class="timer" id="timer"></div>
+</div>
+<div class="bar" id="bar"></div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var mode = q.get('mode') || 'starting';
+  var presets = {
+    starting:  { title: 'STARTING SOON',        sub: 'Grab a drink, we go live in a moment', done: 'WE ARE LIVE' },
+    brb:       { title: 'BE RIGHT BACK',        sub: 'Stay with us', done: 'BACK ANY SECOND' },
+    ending:    { title: 'THANKS FOR WATCHING',  sub: 'Stream ending. See you next time', done: '' },
+    countdown: { title: 'COMING UP',            sub: '', done: 'GO TIME' }
+  };
+  var p = presets[mode] || presets.starting;
+  document.body.className = mode;
+  var title = q.has('title') ? q.get('title') : p.title;
+  var sub = q.has('sub') ? q.get('sub') : p.sub;
+  var done = q.has('done') ? q.get('done') : p.done;
+  var minutes = parseFloat(q.get('minutes') || '0') || 0;
+  var at = q.get('at');
+
+  var h1 = document.getElementById('title');
+  Array.from(title).forEach(function (ch, i) {
+    var s = document.createElement('span');
+    if (ch === ' ') s.innerHTML = '&nbsp;'; else s.textContent = ch;
+    s.style.animationDelay = (0.15 + i * 0.045) + 's';
+    h1.appendChild(s);
+  });
+  document.getElementById('sub').textContent = sub;
+
+  var timer = document.getElementById('timer'), bar = document.getElementById('bar');
+  var target = 0, span = 0;
+  function start() {
+    var now = Date.now();
+    if (at && /^\d{1,2}:\d{2}$/.test(at)) {
+      var hm = at.split(':'), t = new Date();
+      t.setHours(+hm[0], +hm[1], 0, 0);
+      if (t.getTime() < now - 12 * 3600e3) t = new Date(t.getTime() + 24 * 3600e3); // tomorrow's, unless it just passed
+      target = t.getTime(); span = Math.max(1, target - now);
+    } else if (minutes > 0) {
+      target = now + minutes * 60e3; span = minutes * 60e3;
+    } else { target = 0; }
+    timer.className = 'timer';
+  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function tick() {
+    if (!target) { timer.textContent = ''; bar.style.transform = 'scaleX(0)'; return; }
+    var left = target - Date.now();
+    if (left <= 0) {
+      timer.textContent = done; timer.className = 'timer done'; bar.style.transform = 'scaleX(1)'; return;
+    }
+    var s = Math.ceil(left / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+    timer.textContent = (h ? h + ':' + pad(m) : pad(m)) + ':' + pad(s % 60);
+    bar.style.transform = 'scaleX(' + (1 - left / span) + ')';
+  }
+  start();
+  setInterval(tick, 250);
+  tick();
+  // RareStudio tells the page when its scene goes on air: a "5 minutes" countdown starts then.
+  window.addEventListener('rarestudio-live', function () { start(); tick(); });
+
+  // Slow drifting stars.
+  var c = document.getElementById('stars'), g = c.getContext('2d'), stars = [];
+  function size() { c.width = innerWidth; c.height = innerHeight; }
+  size(); addEventListener('resize', size);
+  for (var i = 0; i < 90; i++) stars.push({ x: Math.random(), y: Math.random(), r: Math.random() * 1.8 + .4, s: Math.random() * .00006 + .00002, p: Math.random() * 6.28 });
+  (function frame(t) {
+    g.clearRect(0, 0, c.width, c.height);
+    stars.forEach(function (st) {
+      st.y -= st.s * 16; if (st.y < 0) st.y = 1;
+      g.globalAlpha = .25 + .55 * (.5 + .5 * Math.sin(t / 900 + st.p));
+      g.fillStyle = '#dfe6ff';
+      g.beginPath(); g.arc(st.x * c.width, st.y * c.height, st.r * c.height / 900, 0, 6.2832); g.fill();
+    });
+    requestAnimationFrame(frame);
+  })(0);
+})();
+</script>
+</body>
+</html>

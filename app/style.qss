@@ -8,17 +8,43 @@ QMainWindow::separator { background: #111117; width: 6px; height: 6px; }
 QMainWindow::separator:hover { background: #3b2a66; }
 QWidget { color: #ececf4; }
 QLabel#hint { color: #9a9ab0; }
+QLabel#dialogTitle { font-size: 18px; font-weight: 600; }
 QLabel#empty { color: #6f6f86; padding: 14px 8px; }
 QLabel#warning { color: #fbbf24; }
 QLabel#error { color: #f87171; }
 
 /* ---- Toolbar ---------------------------------------------------------------------------- */
-QToolBar { background: #15151d; border: none; border-bottom: 1px solid #23232e; padding: 6px 10px; spacing: 8px; }
-QToolBar::separator { background: #2a2a37; width: 1px; margin: 6px 6px; }
+QToolBar { background: #15151d; border: none; border-bottom: 1px solid #23232e; padding: 8px 12px; spacing: 10px; }
+QToolBar::separator { background: #2a2a37; width: 1px; margin: 8px 6px; }
 QToolBar QToolButton { background: transparent; color: #ececf4; border: 1px solid transparent; border-radius: 8px; padding: 6px 12px; font-weight: 600; }
 QToolBar QToolButton:hover { background: #22222d; border-color: #2f2f3d; }
 QToolBar QToolButton:pressed { background: #2c2140; }
-QLabel#stats { color: #8a8aa0; padding: 0 12px; font-size: 12px; }
+QLabel#stats { color: #8a8aa0; padding: 0 8px; font-size: 12px; }
+
+/* Capsules: a few related controls in one rounded tray. */
+QFrame#barGroup, QFrame#statsGroup { background: #1a1a24; border: 1px solid #272734; border-radius: 12px; }
+QFrame#barGroup QLabel, QFrame#statsGroup QLabel { background: transparent; border: none; }
+QLabel#barCaption { color: #8a7bc8; font-size: 15px; font-weight: 700; padding: 0 2px 0 8px; }
+
+QFrame#barGroup QToolButton#barBtn { background: transparent; border: 1px solid transparent; border-radius: 9px; padding: 6px 13px; color: #d8d8e6; font-weight: 600; }
+QFrame#barGroup QToolButton#barBtn:hover { background: #26263a; border-color: #3a3a52; color: #ffffff; }
+QFrame#barGroup QToolButton#barBtn:pressed { background: #33255a; }
+
+QFrame#barGroup QComboBox#barCombo, QFrame#barGroup QSpinBox#barSpin { background: #121219; border: 1px solid #2a2a37; border-radius: 9px; padding: 4px 8px; min-height: 20px; }
+QFrame#barGroup QComboBox#barCombo:hover, QFrame#barGroup QSpinBox#barSpin:hover { border-color: #4a3a85; }
+
+/* Capture cluster: Rec / pause / replay / clip */
+QFrame#barGroup QPushButton#recBtn, QFrame#barGroup QPushButton#capBtn { background: transparent; border: 1px solid transparent; border-radius: 9px; padding: 6px 13px; color: #d8d8e6; font-weight: 600; min-height: 20px; }
+QFrame#barGroup QPushButton#recBtn { color: #fca5a5; }
+QFrame#barGroup QPushButton#recBtn:hover, QFrame#barGroup QPushButton#capBtn:hover { background: #26263a; border-color: #3a3a52; color: #ffffff; }
+QFrame#barGroup QPushButton#recBtn:checked { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #dc2626, stop:1 #e11d48); border-color: #f43f5e; color: white; }
+QFrame#barGroup QPushButton#capBtn:checked { background: #33255a; border-color: #8b5cf6; color: #f5f3ff; }
+QFrame#barGroup QPushButton#capBtn:disabled { color: #5c5c70; background: transparent; border-color: transparent; }
+
+/* Studio Mode: a pill that lights up violet */
+QPushButton#barToggle { background: #1a1a24; border: 1px solid #272734; border-radius: 12px; padding: 8px 16px; font-weight: 600; color: #b9b9cc; min-height: 20px; }
+QPushButton#barToggle:hover { border-color: #6d4fd1; color: #ffffff; }
+QPushButton#barToggle:checked { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4c1d95, stop:1 #7c3aed); border-color: #a78bfa; color: white; }
 
 #liveChip, #recChip { border-radius: 13px; font-weight: 700; }
 #liveChip { background: rgba(255, 77, 109, 0.14); border: 1px solid rgba(255, 77, 109, 0.45); }
@@ -28,7 +54,7 @@ QLabel#stats { color: #8a8aa0; padding: 0 12px; font-size: 12px; }
 
 QPushButton#goLive {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7c3aed, stop:1 #ec4899);
-    color: white; font-weight: 700; border: none; border-radius: 9px; padding: 8px 24px;
+    color: white; font-weight: 700; border: none; border-radius: 12px; padding: 10px 26px;
 }
 QPushButton#goLive:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8b4cf5, stop:1 #f25aa9); }
 QPushButton#goLive:pressed { background: #6d28d9; }

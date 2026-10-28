@@ -19,6 +19,9 @@ public:
 
 	obs_encoder_t *video() const { return m_video; }
 	obs_encoder_t *audio() const { return m_audio; }
+	// Audio for track `track` (0 = the main one above): the clip buffers record every track so the clip
+	// editor can balance them (see AudioTracks.h). Idle unless an output is using them.
+	obs_encoder_t *trackAudio(int track) const { return track == 0 ? m_audio : m_extraAudio[track - 1]; }
 	QString videoName() const { return m_videoName; }
 
 	// The encoder id to use: your Settings choice, else the best available. Empty if none.
@@ -32,5 +35,6 @@ private:
 	int m_refs = 0;
 	obs_encoder_t *m_video = nullptr;
 	obs_encoder_t *m_audio = nullptr;
+	obs_encoder_t *m_extraAudio[3] = {};
 	QString m_videoName;
 };

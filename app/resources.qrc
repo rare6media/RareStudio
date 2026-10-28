@@ -1,6 +1,8 @@
 <RCC>
   <qresource prefix="/">
     <file alias="logo">../assets/logo.png</file>
+    <file alias="CHANGELOG.md">../CHANGELOG.md</file>
+    <file alias="overlay.html">../assets/overlay.html</file>
     <file alias="style.qss">style.qss</file>
     <file alias="check.svg">check.svg</file>
   </qresource>

@@ -1,5 +1,6 @@
 #include "Recorder.h"
 
+#include "AudioTracks.h"
 #include "EncoderPool.h"
 
 #include <util/platform.h>
@@ -164,7 +165,9 @@ bool Recorder::startReplay(QString *error)
 		return false;
 	}
 	obs_output_set_video_encoder(m_replay, pool.video());
-	obs_output_set_audio_encoder(m_replay, pool.audio(), 0);
+	for (int t = 0; t < AudioTracks::kCount; ++t) // every track, so the clip editor can balance them
+		if (pool.trackAudio(t))
+			obs_output_set_audio_encoder(m_replay, pool.trackAudio(t), size_t(t));
 	signal_handler_t *sh = obs_output_get_signal_handler(m_replay);
 	signal_handler_connect(sh, "stop", onSignal, &m_ctx[ReplayStop]);
 	signal_handler_connect(sh, "saved", onSignal, &m_ctx[ReplaySaved]);

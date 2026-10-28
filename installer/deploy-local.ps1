@@ -17,6 +17,8 @@ $ErrorActionPreference = 'Stop'
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $stage = Join-Path (Resolve-Path $Build) 'stage'
 $ver = (Get-Content (Join-Path $stage 'version.txt') -TotalCount 1).Trim()
+# Signed as Rare6Media (self-signed; see scripts/sign.ps1) before it is packaged or deployed.
+& (Join-Path $PSScriptRoot '../scripts/sign.ps1') -Build $Build
 $base = Join-Path $env:LOCALAPPDATA 'RareStudio'
 $dest = Join-Path $base "updates\$ver"
 $installDir = Join-Path $env:ProgramFiles 'RareStudio'
@@ -85,6 +87,35 @@ $s.IconLocation = "$icon,0"
 $s.Description = "RareStudio $ver"
 $s.Save()
 Write-Host "Desktop shortcut refreshed: $lnk"
+
+# ---- Start menu shortcut ---------------------------------------------------------------------------
+# The installer's all-users shortcut lives in ProgramData, so changing it needs admin (one UAC prompt).
+# It points at the same per-version icon file as the desktop one, so it changes too.
+$startLnk = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'RareStudio.lnk'
+if (Test-Path $startLnk) {
+    $fix = {
+        param($lnk, $target, $icon, $ver)
+        $s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+        $s.TargetPath = $target
+        $s.WorkingDirectory = Split-Path $target
+        $s.IconLocation = "$icon,0"
+        $s.Description = "RareStudio $ver"
+        $s.Save()
+    }
+    try {
+        & $fix $startLnk $target $icon $ver
+        Write-Host "Start menu shortcut refreshed: $startLnk"
+    } catch {
+        Write-Host 'Updating the Start menu shortcut needs admin rights; asking Windows (UAC)...'
+        $cmd = "& {$fix} '$startLnk' '$target' '$icon' '$ver'"
+        try {
+            $p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile', '-Command', $cmd
+            if ($p.ExitCode -eq 0) { Write-Host 'Start menu shortcut refreshed.' } else { Write-Warning 'Start menu shortcut not updated.' }
+        } catch {
+            Write-Warning 'Start menu shortcut not updated (UAC declined).'
+        }
+    }
+}
 
 # Older icon files are no longer referenced by anything.
 Get-ChildItem $iconDir -Filter 'rarestudio-*.ico' | Where-Object { $_.FullName -ne $icon } | Remove-Item -Force

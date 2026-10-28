@@ -109,5 +109,6 @@ private:
 	QByteArray m_transitionSettings;
 	std::function<void(obs_scene_t *)> m_transitionHook;
 	std::function<void(obs_scene_t *)> m_programHook;
+	void setupGoXlr();
 	int m_transitionMs = 300;
 };

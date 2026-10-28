@@ -16,6 +16,10 @@ public:
 	int add(const QString &text, const QString &target = QString());
 	void update(int id, const QString &text, const QString &target = QString());
 
+signals:
+	// Right-click > "Edit / trim...": a clip file that can be opened in the clip editor.
+	void editRequested(const QString &path);
+
 private:
 	QListWidget *m_list;
 	int m_next = 0;

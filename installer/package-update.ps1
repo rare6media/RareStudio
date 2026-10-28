@@ -8,6 +8,8 @@ param([string]$Build = (Join-Path $PSScriptRoot '..\build'), [string]$BaseUrl = 
 $ErrorActionPreference = 'Stop'
 $stage = Join-Path (Resolve-Path $Build) 'stage'
 $ver = (Get-Content (Join-Path $stage 'version.txt') -TotalCount 1).Trim()
+# Signed as Rare6Media (self-signed; see scripts/sign.ps1) before it is packaged or deployed.
+& (Join-Path $PSScriptRoot '../scripts/sign.ps1') -Build $Build
 $dist = Join-Path $PSScriptRoot '..\dist'
 New-Item -ItemType Directory -Force $dist | Out-Null
 $dist = (Resolve-Path $dist).Path
@@ -24,6 +26,18 @@ tar.exe -a -cf $zip -C $tmp .
 Remove-Item $tmp -Recurse -Force
 
 $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-@{ version = $ver; url = "$BaseUrl/RareStudio-$ver.zip"; sha256 = $sha } |
+# Release notes come from this version's section of CHANGELOG.md (shown in the app and on the GitHub release).
+$notes = ''
+$changelog = Join-Path $PSScriptRoot '..\CHANGELOG.md'
+if (Test-Path $changelog) {
+    $take = $false; $lines = @()
+    foreach ($l in Get-Content $changelog) {
+        if ($l -match '^## ') { $take = ($l -match ('^## ' + [regex]::Escape($ver) + '($| )')); continue }
+        if ($take) { $lines += $l }
+    }
+    $notes = ($lines -join "`n").Trim()
+}
+Set-Content (Join-Path $dist 'notes.md') $notes -Encoding utf8
+@{ version = $ver; url = "$BaseUrl/RareStudio-$ver.zip"; sha256 = $sha; notes = $notes } |
     ConvertTo-Json | Set-Content (Join-Path $dist 'latest.json') -Encoding utf8
 Write-Host "Wrote $zip ($sha)"

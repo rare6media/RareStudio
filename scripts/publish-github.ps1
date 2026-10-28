@@ -29,7 +29,7 @@ if (-not (Test-Path .git)) { git init -b main | Out-Null }
 git config user.name $login
 git config user.email "$id+$login@users.noreply.github.com"
 git add -A
-git diff --cached --quiet; if ($LASTEXITCODE -ne 0) { git commit -m "RareStudio" | Out-Null }
+git diff --cached --quiet; if ($LASTEXITCODE -ne 0) { git commit -m "RareStudio release" | Out-Null } # normally you committed already
 
 if (-not (Test-Gh repo view "$login/$Repo")) {
     & $gh repo create "$login/$Repo" --public --source . --remote origin --push `
@@ -47,10 +47,11 @@ $base = "https://github.com/$login/$Repo/releases/download/v$version"
 
 if (-not (Test-Gh release view "v$version" --repo "$login/$Repo")) {
     & $gh release create "v$version" "dist\RareStudio-$version.zip" "dist\latest.json" --repo "$login/$Repo" `
-        --title "RareStudio $version" --notes "RareStudio $version. Unzip, or let an installed copy update itself."
+        --title "RareStudio $version" --notes-file (Join-Path 'dist' 'notes.md')
     Assert-Ok 'gh release create'
 } else {
     & $gh release upload "v$version" "dist\RareStudio-$version.zip" "dist\latest.json" --clobber --repo "$login/$Repo"
+    & $gh release edit "v$version" --notes-file (Join-Path 'dist' 'notes.md') --repo "$login/$Repo"
     Assert-Ok 'gh release upload'
 }
 

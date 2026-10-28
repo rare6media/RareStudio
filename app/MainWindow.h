@@ -47,13 +47,17 @@ private:
 	void renameSource();
 	void toggleLockSelected();
 	void checkForUpdates();
+	void addOverlayScene();
+	void buildCollectionsMenu(class QMenu *menu);
+	void switchCollection(const QString &name);
 	void buildClipsDock();
 	void setReplayUi(bool armed);
 	void refreshStreamKeys(bool announce);
 	void upsertDestination(const QString &name, const QString &server, const QString &key);
 	void createTwitchClip();
 	void onShortSaved(const QString &path);
-	void uploadShort(int panelId, const QString &path);
+	void uploadShort(int panelId, const QString &path, const QString &title = QString(), const QString &privacy = QString());
+	void openClipEditor(const QString &path, bool offerUpload);
 	void toggleRecord();
 	void togglePause();
 	void syncPauseButton();
@@ -130,7 +134,6 @@ private:
 	HotkeyManager *m_hotkeys = nullptr;
 	QPushButton *m_recBtn = nullptr;
 	QPushButton *m_pauseBtn = nullptr;
-	QAction *m_pauseAction = nullptr; // the toolbar hides a widget through its action
 	QPushButton *m_replayBtn = nullptr;
 	QPushButton *m_clipBtn = nullptr;
 	QMenu *m_viewMenu = nullptr;

@@ -4,6 +4,7 @@
 #include <QDesktopServices>
 #include <QFileInfo>
 #include <QListWidget>
+#include <QMenu>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -16,6 +17,20 @@ ClipsPanel::ClipsPanel(QWidget *parent) : QWidget(parent)
 	lay->setContentsMargins(6, 6, 6, 6);
 	lay->addWidget(m_list);
 
+	m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+	connect(m_list, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+		QListWidgetItem *it = m_list->itemAt(pos);
+		const QString target = it ? it->data(Qt::UserRole + 1).toString() : QString();
+		if (target.isEmpty() || !QFileInfo::exists(target))
+			return;
+		static const QStringList kVideo = {"mp4", "mkv", "mov", "flv", "ts"};
+		QMenu menu;
+		if (kVideo.contains(QFileInfo(target).suffix().toLower()))
+			menu.addAction("Edit / trim...", this, [this, target] { emit editRequested(target); });
+		menu.addAction("Open", this, [target] { QDesktopServices::openUrl(QUrl::fromLocalFile(target)); });
+		menu.addAction("Show in folder", this, [target] { QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(target).absolutePath())); });
+		menu.exec(m_list->viewport()->mapToGlobal(pos));
+	});
 	connect(m_list, &QListWidget::itemDoubleClicked, this, [](QListWidgetItem *it) {
 		const QString target = it->data(Qt::UserRole + 1).toString();
 		if (target.isEmpty())

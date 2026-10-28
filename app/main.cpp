@@ -1,8 +1,11 @@
+#include "Changelog.h"
+#include "CrashReport.h"
 #include "MainWindow.h"
 #include "ObsCore.h"
 #include "RareTransitions.h"
 #include "SelfTest.h"
 #include "SettingsDialog.h"
+#include "SplashScreen.h"
 #include "TransitionManager.h"
 #include "UiBits.h"
 
@@ -13,7 +16,11 @@
 #include <QSettings>
 #include <QMessageBox>
 #include <QProcess>
+#include <QDesktopServices>
+#include <QPushButton>
 #include <QStyleFactory>
+#include <QTimer>
+#include <QUrl>
 
 #include <cmath>
 
@@ -40,12 +47,21 @@ int main(int argc, char **argv)
 	});
 	qputenv("QT_LOGGING_RULES", "qt.webenginecontext.debug=true");
 
-	// Automated tests run against a throw-away profile so they never touch real settings/scenes.
+	// Automated tests run against a throw-away profile so they never touch real settings/scenes. The
+	// --selftest-* modes insist on one: they add destinations, sources and recordings as they go.
+	for (int i = 1; i < argc; ++i)
+		if (qstrncmp(argv[i], "--selftest", 10) == 0 && qEnvironmentVariableIsEmpty("RARESTUDIO_TEST_PROFILE")) {
+			const QString fresh = qEnvironmentVariable("TEMP") + "/rarestudio-selftest-profile"; // tests expect an empty one
+			QDir(fresh).removeRecursively();
+			qputenv("RARESTUDIO_TEST_PROFILE", fresh.toLocal8Bit());
+		}
 	if (const QByteArray prof = qgetenv("RARESTUDIO_TEST_PROFILE"); !prof.isEmpty()) {
 		QSettings::setDefaultFormat(QSettings::IniFormat);
 		QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, QString::fromLocal8Bit(prof));
 		qputenv("APPDATA", prof);
 	}
+
+	CrashReport::install(); // after the test-profile redirect above, so reports land in the profile in use
 
 	// Settings > Interface > size: Qt scales every widget, font and the preview's pixel mapping.
 	// It has to be known before the application object exists.
@@ -75,6 +91,13 @@ int main(int argc, char **argv)
 		app.setStyleSheet(QString::fromUtf8(css.readAll()));
 	UiBits::installEffects(app);
 
+	// Startup sequence. Never for the headless tests, never with animations off or --no-splash.
+	SplashScreen *splash = nullptr;
+	if (qEnvironmentVariableIsEmpty("RARESTUDIO_TEST_PROFILE") && UiBits::animationsEnabled() && !app.arguments().contains("--no-splash")) {
+		splash = new SplashScreen;
+		splash->setStatus("Starting video engine");
+	}
+
 	// libobs locates Game Capture's hook files relative to the working directory, assuming OBS's
 	// bin\64bit layout. Mirror it so "..\..\data\obs-plugins\win-capture" resolves to our data dir.
 	const QString appDir = QCoreApplication::applicationDirPath();
@@ -83,12 +106,15 @@ int main(int argc, char **argv)
 
 	const SettingsDialog::Video v = SettingsDialog::load();
 	if (!ObsCore::instance().start(QCoreApplication::applicationDirPath(), v.baseW, v.baseH, v.outW, v.outH, v.fps)) {
+		delete splash;
 		QMessageBox::critical(nullptr, "RareStudio",
 				      "Could not start the video engine:\n" + ObsCore::instance().error() +
 					      "\n\nLog: %APPDATA%\\RareStudio\\latest.log");
 		return 1;
 	}
 
+	if (splash)
+		splash->setStatus("Loading transitions");
 	RareTransitions::registerAll(); // our own shader transitions + brand stinger
 	TransitionManager::instance().load();
 
@@ -115,6 +141,11 @@ int main(int argc, char **argv)
 			ObsCore::instance().shutdown();
 			return rc;
 		}
+		if (const int i = args.indexOf("--selftest-clips"); i >= 0) {
+			const int rc = SelfTest::clips(args.value(i + 1, QDir::tempPath() + "/rarestudio-selftest"));
+			ObsCore::instance().shutdown();
+			return rc;
+		}
 		if (const int i = args.indexOf("--selftest-transitions"); i >= 0) {
 			const int rc = SelfTest::transitions(args.value(i + 1, QDir::tempPath() + "/rarestudio-selftest"));
 			ObsCore::instance().shutdown();
@@ -124,8 +155,35 @@ int main(int argc, char **argv)
 
 	int rc;
 	{
+		if (splash)
+			splash->setStatus("Building workspace");
 		MainWindow w;
+		if (splash) {
+			splash->setStatus("Ready");
+			splash->waitUntilDone();
+		}
 		w.show();
+		if (splash)
+			splash->dismiss(); // fades out over the window, then deletes itself
+
+		// Things to tell the user about, one at a time and once the window is up: a crash last time,
+		// then what changed in this version.
+		QTimer::singleShot(600, &w, [&w] {
+			if (const QString report = CrashReport::takePending(); !report.isEmpty()) {
+				QMessageBox box(&w);
+				box.setIcon(QMessageBox::Warning);
+				box.setWindowTitle("RareStudio");
+				box.setText("RareStudio closed unexpectedly last time.");
+				box.setInformativeText("Your scenes, sources and stream destinations were restored from the autosave. "
+						       "A crash report was saved; include it if you report the problem.");
+				QPushButton *open = box.addButton("Open report folder", QMessageBox::ActionRole);
+				box.addButton(QMessageBox::Ok);
+				box.exec();
+				if (box.clickedButton() == open)
+					QDesktopServices::openUrl(QUrl::fromLocalFile(CrashReport::logsDir()));
+			}
+			Changelog::showIfDue(&w);
+		});
 		rc = app.exec();
 	}
 	ObsCore::instance().shutdown();
