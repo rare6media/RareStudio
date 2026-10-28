@@ -687,7 +687,7 @@ int ui(const QString &outDir)
 		}
 		{
 			SplashScreen splash;
-			for (double t : {1.0, 2.0, 2.6, 3.6}) {
+			for (double t : {0.5, 1.0, 1.6, 2.4}) {
 				splash.freezeAt(t);
 				splash.repaint();
 				splash.grab().save(QDir(outDir).filePath(QString("splash_%1.png").arg(t)));

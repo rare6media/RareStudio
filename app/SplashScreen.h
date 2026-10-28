@@ -7,8 +7,8 @@
 #include <QTimer>
 #include <QWidget>
 
-// Startup sequence: an aurora of drifting light, packets of data flowing in from both sides, and the
-// RareStudio logo revealed with its name and version beneath. Time-driven (every frame is a pure
+// Startup sequence: the RareStudio logo transmits like a broadcast antenna (signal arcs pulsing
+// outward) over the app's dark base colour, with its name and version beneath. Time-driven (every frame is a pure
 // function of the clock), so it looks the same however busy the startup is.
 //
 // Loading work blocks the UI thread, so call pump() from inside long steps to keep it moving.
@@ -34,13 +34,11 @@ protected:
 	void keyPressEvent(QKeyEvent *) override { m_skipped = true; }
 
 private:
-	void paintAurora(QPainter &p, double t);
-	void paintPackets(QPainter &p, double t, const QPointF &centre);
+	void paintSignal(QPainter &p, double t, const QPointF &centre);
 	void paintBrand(QPainter &p, double t, const QPointF &centre);
 
 	QElapsedTimer m_clock;
 	QTimer m_frame;
-	QImage m_sky; // aurora rendered small, scaled up smooth: the scaling is the glow
 	QPixmap m_logo;
 	QString m_status = "Starting";
 	bool m_skipped = false;

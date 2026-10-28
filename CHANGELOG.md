@@ -3,6 +3,12 @@
 Each release is a `## <version> - <date>` section. The newest goes first; the "What's new" window
 shown after an update reads this file, so keep entries short and written for the person streaming.
 
+## 0.11.1 - 2026-10-28
+
+- **Simpler startup**: the aurora is gone. RareStudio now opens on its own dark background with the logo
+  broadcasting like an antenna, signal arcs pulsing out from both sides, then the name and version. It is
+  also shorter (about two and a half seconds). Click or press a key to skip it.
+
 ## 0.11.0 - 2026-10-28
 
 - **Clip editor**: every Short now opens in a review window before it goes anywhere. Watch it, trim it
