@@ -3,7 +3,9 @@
 #include "Changelog.h"
 #include "ClipMedia.h"
 #include "Collections.h"
+#include "Overlays.h"
 #include "SplashScreen.h"
+#include "StreamHealth.h"
 
 #include "ObsCore.h"
 #include "FiltersDialog.h"
@@ -608,6 +610,67 @@ int stability(const QString &outDir)
 		check(false, "screenshot: File > Take screenshot exists");
 	}
 
+	// Overlay scenes: the bundled page must actually render inside RareStudio's own browser source.
+	{
+		ObsCore &core = ObsCore::instance();
+		obs_scene_t *before = core.currentScene();
+		const struct { const char *mode, *name; } kinds[] = {{"starting", "T Starting"}, {"brb", "T BRB"}};
+		for (const auto &k : kinds) {
+			obs_scene_t *sc = core.createScene(k.name);
+			if (!sc) {
+				check(false, QString("overlay %1: scene created").arg(k.mode));
+				continue;
+			}
+			core.setCurrentScene(sc);
+			if (obs_source_t *src = core.addSource("browser_source", QString(k.name) + " overlay")) {
+				QUrl url = QUrl::fromLocalFile(Overlays::prepare() + "/overlay.html");
+				url.setQuery(QString("mode=%1&minutes=5").arg(k.mode));
+				obs_data_t *s = obs_data_create();
+				obs_data_set_string(s, "url", url.toString(QUrl::FullyEncoded).toUtf8().constData());
+				obs_data_set_int(s, "width", core.canvasWidth());
+				obs_data_set_int(s, "height", core.canvasHeight());
+				obs_data_set_int(s, "fps", 30);
+				obs_source_update(src, s);
+				obs_data_release(s);
+				obs_source_release(src);
+			}
+			wait(3500); // load, entrance animation, a few frames
+			QDir(recDir).removeRecursively();
+			QStringList pngs;
+			if (QAction *shot = action("Take screenshot")) {
+				shot->trigger();
+				for (int i = 0; i < 50 && pngs.isEmpty(); ++i) {
+					wait(100);
+					pngs = QDir(recDir).entryList({"Screenshot_*.png"});
+				}
+				wait(300);
+			}
+			const QImage img(pngs.isEmpty() ? QString() : QDir(recDir).filePath(pngs.first()));
+			if (!img.isNull())
+				img.save(QDir(outDir).filePath(QString("overlay_%1.png").arg(k.mode)));
+			// Rendered = dark background (not the grey/black of an empty source) with bright text and colour in it.
+			int bright = 0, coloured = 0, dark = 0;
+			for (int y = 0; y < img.height(); y += 8)
+				for (int x = 0; x < img.width(); x += 8) {
+					const QColor c = img.pixelColor(x, y);
+					bright += c.lightness() > 200;
+					coloured += c.saturation() > 120 && c.lightness() > 90;
+					dark += c.lightness() < 40;
+				}
+			check(!img.isNull() && bright > 20 && coloured > 20 && dark > 500,
+			      QString("overlay %1 renders in the browser source (bright %2, coloured %3, dark %4)").arg(k.mode).arg(bright).arg(coloured).arg(dark));
+		}
+		if (before)
+			core.setCurrentScene(before);
+		for (const auto &k : kinds) {
+			obs_source_t *s = obs_get_source_by_name(k.name);
+			if (!s)
+				continue;
+			core.removeScene(obs_scene_from_source(s));
+			obs_source_release(s);
+		}
+	}
+
 	// Pause: only shown while recording; pausing freezes the REC clock; the file is written on stop.
 	QPushButton *rec = nullptr, *pause = nullptr;
 	for (QPushButton *b : w.findChildren<QPushButton *>()) {
@@ -653,6 +716,7 @@ int stability(const QString &outDir)
 int ui(const QString &outDir)
 {
 	QDir().mkpath(outDir);
+	int healthFailures = 0;
 	{
 		MainWindow w;
 		w.resize(1500, 900);
@@ -686,6 +750,41 @@ int ui(const QString &outDir)
 			filters.close();
 		}
 		{
+			using L = StreamHealthPanel::Level;
+			QFile healthLog(QDir(outDir).filePath("health.txt"));
+			healthLog.open(QIODevice::WriteOnly | QIODevice::Truncate);
+			auto check = [&](bool ok, const QString &what) {
+				healthLog.write((QString(ok ? "PASS  " : "FAIL  ") + what + "\n").toUtf8());
+				healthFailures += ok ? 0 : 1;
+			};
+			check(StreamHealthPanel::assessDestination(0, 0, false) == L::Good, "health: clean destination is healthy");
+			check(StreamHealthPanel::assessDestination(0.5, 0, false) == L::Fair, "health: 0.5% drops is a warning");
+			check(StreamHealthPanel::assessDestination(3, 0, false) == L::Poor, "health: 3% drops is poor");
+			check(StreamHealthPanel::assessDestination(0, 0.9, false) == L::Poor, "health: saturated connection is poor");
+			check(StreamHealthPanel::assessDestination(0, 0, true) == L::Poor, "health: reconnecting is poor");
+			check(StreamHealthPanel::assessMachine({40, 60, 0, 0}) == L::Good, "health: idle machine is healthy");
+			check(StreamHealthPanel::assessMachine({40, 60, 0, 1}) == L::Fair, "health: skipped frames warn");
+			check(StreamHealthPanel::assessMachine({97, 60, 0, 0}) == L::Poor, "health: 97% CPU is poor");
+			{
+				StreamHealthPanel panel;
+				panel.resize(380, 520);
+				panel.show();
+				QList<L> seen;
+				QObject::connect(&panel, &StreamHealthPanel::levelChanged, [&seen](L l, const QString &) { seen.append(l); });
+				for (int i = 0; i < 30; ++i) {
+					MultiStream::DestStats a, b;
+					a.index = 0; a.name = "Twitch"; a.active = true; a.total = i * 60; a.bytes = quint64(i) * 560000;
+					b.index = 1; b.name = "YouTube"; b.active = true; b.total = i * 60; b.dropped = i > 15 ? (i - 15) * 6 : 0;
+					b.bytes = quint64(i) * 380000; b.congestion = i > 20 ? 0.6 : 0.1;
+					panel.tick({a, b}, {38, 60, 0, 0});
+					QApplication::processEvents();
+				}
+				panel.grab().save(QDir(outDir).filePath("stream_health.png"));
+				check(panel.level() != L::Good && panel.verdict().contains("YouTube"), "health: panel names the destination that is dropping (" + panel.verdict() + ")");
+				check(!seen.isEmpty(), "health: level change is announced");
+				panel.reset();
+				check(panel.level() == L::Good, "health: reset returns to idle");
+			}
 			SplashScreen splash;
 			for (double t : {0.5, 1.0, 1.6, 2.4}) {
 				splash.freezeAt(t);
@@ -701,7 +800,7 @@ int ui(const QString &outDir)
 		}
 		w.close();
 	}
-	return 0;
+	return healthFailures ? 1 : 0;
 }
 
 } // namespace SelfTest

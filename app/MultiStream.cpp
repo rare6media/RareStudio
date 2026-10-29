@@ -27,6 +27,7 @@ bool MultiStream::start(const QList<Destination> &dests, QString *error)
 	for (const auto &[index, d] : active) {
 		Out o;
 		o.index = index;
+		o.name = d.name;
 
 		obs_data_t *ss = obs_data_create();
 		obs_data_set_string(ss, "server", d.server.toUtf8().constData());
@@ -104,6 +105,25 @@ MultiStream::Stats MultiStream::stats() const
 		s.bytes += obs_output_get_total_bytes(o.output);
 	}
 	return s;
+}
+
+QList<MultiStream::DestStats> MultiStream::destStats() const
+{
+	QList<DestStats> out;
+	for (const Out &o : m_outputs) {
+		DestStats d;
+		d.index = o.index;
+		d.name = o.name;
+		d.active = obs_output_active(o.output);
+		d.reconnecting = obs_output_reconnecting(o.output);
+		d.dropped = obs_output_get_frames_dropped(o.output);
+		d.total = obs_output_get_total_frames(o.output);
+		d.bytes = obs_output_get_total_bytes(o.output);
+		d.congestion = obs_output_get_congestion(o.output);
+		d.connectMs = obs_output_get_connect_time_ms(o.output);
+		out.append(d);
+	}
+	return out;
 }
 
 void MultiStream::stop()

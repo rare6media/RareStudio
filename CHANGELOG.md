@@ -3,6 +3,17 @@
 Each release is a `## <version> - <date>` section. The newest goes first; the "What's new" window
 shown after an update reads this file, so keep entries short and written for the person streaming.
 
+## 0.12.0 - 2026-10-28
+
+- **Stream Health panel**: a new tab beside Stream shows how the broadcast is doing while you are live. One
+  plain verdict (Healthy / Fair / Poor) says what is wrong if anything is, then each destination gets its
+  own bitrate graph, dropped frames and connection congestion, and your PC's CPU, missed render frames and
+  encoder skips. Problems also appear in the status bar the moment they start, and the toolbar shows a
+  HEALTH reading next to the dropped-frame count.
+- **Overlay scenes, polished**: Starting soon, Be right back, Stream ending and Countdown now match the app
+  (dark background, the logo transmitting with signal rings, a status label like STANDBY). Pick your own
+  two accent colours, edit the status label and hide the logo when you add one.
+
 ## 0.11.1 - 2026-10-28
 
 - **Simpler startup**: the aurora is gone. RareStudio now opens on its own dark background with the logo

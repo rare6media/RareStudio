@@ -157,3 +157,8 @@ QMenu::separator { height: 1px; background: #2f2f3d; margin: 5px 8px; }
 QStatusBar { background: #15151d; color: #9a9ab0; border-top: 1px solid #23232e; }
 QStatusBar::item { border: none; }
 QToolTip { background: #1f1f2a; color: #ececf4; border: 1px solid #3d3d4f; border-radius: 6px; padding: 5px 8px; }
+
+/* Stream Health dock */
+QLabel#healthBanner { background: #1a1a24; border: 1px solid #272734; border-radius: 12px; padding: 12px 14px; font-size: 14px; }
+QWidget#healthRow { background: #17171f; border: 1px solid #2a2a37; border-radius: 12px; }
+QWidget#healthRow QLabel { background: transparent; border: none; }

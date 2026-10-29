@@ -7,71 +7,95 @@
   RareStudio scene overlay: Starting soon, Be right back, Stream ending, Countdown.
   Driven by the address it is opened with:
     overlay.html?mode=starting|brb|ending|countdown
-                &title=...&sub=...&minutes=5&at=20:00&done=We%20are%20live
+                &title=...&sub=...&chip=STANDBY&minutes=5&at=20:00&done=We%20are%20live
+                &c1=8b5cf6&c2=ec4899&logo=0
   minutes counts down from when the scene goes on air; at= counts down to a clock time instead.
+  c1/c2 are the two accent colours (hex, no #); logo=0 hides the logo; chip is the small status label.
   RareStudio rewrites this file on every start; make a copy to customise it.
 -->
 <style>
-  :root { --a1: #7c3aed; --a2: #22d3ee; --a3: #e879f9; }
-  body.brb    { --a1: #f59e0b; --a2: #f43f5e; --a3: #a78bfa; }
-  body.ending { --a1: #34d399; --a2: #38bdf8; --a3: #7c3aed; }
-  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #070710;
-    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #f4f4fc; }
-  .sky { position: absolute; inset: 0; overflow: hidden; }
-  .blob { position: absolute; width: 70vmax; height: 70vmax; border-radius: 50%; filter: blur(9vmin);
-    opacity: .5; mix-blend-mode: screen; will-change: transform; }
-  .b1 { background: radial-gradient(circle, var(--a1), transparent 65%); left: -20%; top: -35%; animation: d1 19s ease-in-out infinite alternate; }
-  .b2 { background: radial-gradient(circle, var(--a2), transparent 65%); right: -25%; top: -20%; animation: d2 23s ease-in-out infinite alternate; }
-  .b3 { background: radial-gradient(circle, var(--a3), transparent 65%); left: 15%; bottom: -55%; animation: d3 27s ease-in-out infinite alternate; opacity: .38; }
-  @keyframes d1 { to { transform: translate(28vw, 14vh) scale(1.2); } }
-  @keyframes d2 { to { transform: translate(-30vw, 20vh) scale(.9); } }
-  @keyframes d3 { to { transform: translate(24vw, -16vh) scale(1.15); } }
-  .curtain { position: absolute; inset: 0; opacity: .55; mix-blend-mode: screen;
-    background: repeating-linear-gradient(90deg, transparent 0 1.6vw, rgba(255,255,255,.05) 1.6vw 2.4vw, transparent 2.4vw 5vw);
-    -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 70%); animation: sway 12s ease-in-out infinite alternate; }
-  @keyframes sway { from { transform: translateX(-2vw) skewX(-2deg); } to { transform: translateX(2vw) skewX(2deg); } }
-  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  :root { --a1: #8b5cf6; --a2: #ec4899; --base: #111117; }
+  body.brb       { --a1: #f59e0b; --a2: #f43f5e; }
+  body.ending    { --a1: #34d399; --a2: #38bdf8; }
+  body.countdown { --a1: #8b5cf6; --a2: #22d3ee; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: var(--base);
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #ececf4; }
+
+  /* Faint grid and a soft vignette: a control room, not a screensaver. */
+  .grid { position: absolute; inset: 0;
+    background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+    background-size: 6vmin 6vmin; -webkit-mask-image: radial-gradient(ellipse at 50% 45%, #000 0%, transparent 72%); }
+  .glow { position: absolute; left: 50%; top: 40%; width: 80vmin; height: 80vmin; margin: -40vmin 0 0 -40vmin; border-radius: 50%;
+    background: radial-gradient(circle, color-mix(in srgb, var(--a1) 28%, transparent), transparent 65%); }
+
   .stage { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
-  .logo { width: 14vmin; height: 14vmin; border-radius: 3vmin; box-shadow: 0 0 6vmin color-mix(in srgb, var(--a1) 70%, transparent);
-    animation: float 6s ease-in-out infinite alternate; margin-bottom: 4vmin; }
-  @keyframes float { to { transform: translateY(-1.2vmin); } }
-  h1 { margin: 0; font-size: 9.5vmin; font-weight: 700; letter-spacing: 1.1vmin; text-shadow: 0 0 4vmin color-mix(in srgb, var(--a2) 55%, transparent); }
+
+  /* The logo transmits: rings leave it one after another. */
+  .tx { position: relative; width: 16vmin; height: 16vmin; margin-bottom: 5vmin; }
+  .ring { position: absolute; left: 50%; top: 50%; width: 16vmin; height: 16vmin; margin: -8vmin 0 0 -8vmin; border-radius: 50%;
+    border: .35vmin solid var(--a1); opacity: 0; animation: ping 4s cubic-bezier(.15,.6,.3,1) infinite; }
+  .ring:nth-child(2) { animation-delay: 1s; border-color: color-mix(in srgb, var(--a1) 50%, var(--a2)); }
+  .ring:nth-child(3) { animation-delay: 2s; border-color: color-mix(in srgb, var(--a1) 20%, var(--a2)); }
+  .ring:nth-child(4) { animation-delay: 3s; border-color: var(--a2); }
+  @keyframes ping { 0% { transform: scale(.9); opacity: .0; } 10% { opacity: .55; } 100% { transform: scale(4.6); opacity: 0; } }
+  .logo { position: relative; width: 100%; height: 100%; border-radius: 3.4vmin; box-shadow: 0 0 5vmin color-mix(in srgb, var(--a1) 55%, transparent);
+    animation: float 6s ease-in-out infinite alternate; }
+  @keyframes float { to { transform: translateY(-1vmin); } }
+  body.nologo .tx { display: none; }
+
+  .chip, h1, .sub, .timer { position: relative; z-index: 2; }
+  .chip { display: inline-flex; align-items: center; gap: 1.2vmin; padding: .9vmin 2.2vmin; border-radius: 99px;
+    border: 1px solid color-mix(in srgb, var(--a1) 55%, transparent); background: color-mix(in srgb, var(--a1) 14%, transparent);
+    font: 600 2vmin/1 "Cascadia Mono", Consolas, monospace; letter-spacing: .5vmin; color: color-mix(in srgb, var(--a1) 40%, #fff); margin-bottom: 3vmin; }
+  .chip i { width: 1.3vmin; height: 1.3vmin; border-radius: 50%; background: var(--a2); animation: blink 1.4s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .chip:empty { display: none; }
+
+  h1 { margin: 0; font-size: 9.5vmin; font-weight: 700; letter-spacing: 1vmin; }
   h1 span { display: inline-block; animation: rise .7s cubic-bezier(.2,.8,.2,1) backwards; }
   @keyframes rise { from { opacity: 0; transform: translateY(2vmin); } }
-  .sub { margin-top: 2.2vmin; font-size: 3.2vmin; letter-spacing: .5vmin; color: #b9b9d8; min-height: 4vmin; }
+  .sub { margin-top: 2.2vmin; font-size: 3.2vmin; letter-spacing: .4vmin; color: #9a9ab0; min-height: 4vmin; }
   .timer { margin-top: 5vmin; font-size: 15vmin; font-weight: 300; letter-spacing: 1vmin; font-variant-numeric: tabular-nums;
-    background: linear-gradient(90deg, var(--a2), var(--a3)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    background: linear-gradient(90deg, var(--a1), var(--a2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
   .timer.done { animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .55; } }
   .timer:empty { display: none; }
-  .bar { position: absolute; left: 0; bottom: 0; height: .8vmin; width: 100%; background: linear-gradient(90deg, var(--a1), var(--a2), var(--a3)); transform-origin: left; transform: scaleX(0); }
+  .bar { position: absolute; left: 0; bottom: 0; height: .9vmin; width: 100%; background: linear-gradient(90deg, var(--a1), var(--a2)); transform-origin: left; transform: scaleX(0); }
+  .track { position: absolute; left: 0; bottom: 0; height: .9vmin; width: 100%; background: rgba(255,255,255,.06); }
 </style>
 </head>
 <body>
-<div class="sky"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div><div class="curtain"></div></div>
-<canvas id="stars"></canvas>
+<div class="grid"></div><div class="glow"></div>
 <div class="stage">
-  <img class="logo" src="logo.png" alt="" onerror="this.style.display='none'">
+  <div class="tx"><div class="ring"></div><div class="ring"></div><div class="ring"></div><div class="ring"></div>
+    <img class="logo" src="logo.png" alt="" onerror="document.body.classList.add('nologo')"></div>
+  <div class="chip" id="chip"></div>
   <h1 id="title"></h1>
   <div class="sub" id="sub"></div>
   <div class="timer" id="timer"></div>
 </div>
-<div class="bar" id="bar"></div>
+<div class="track"></div><div class="bar" id="bar"></div>
 <script>
 (function () {
   var q = new URLSearchParams(location.search);
   var mode = q.get('mode') || 'starting';
   var presets = {
-    starting:  { title: 'STARTING SOON',        sub: 'Grab a drink, we go live in a moment', done: 'WE ARE LIVE' },
-    brb:       { title: 'BE RIGHT BACK',        sub: 'Stay with us', done: 'BACK ANY SECOND' },
-    ending:    { title: 'THANKS FOR WATCHING',  sub: 'Stream ending. See you next time', done: '' },
-    countdown: { title: 'COMING UP',            sub: '', done: 'GO TIME' }
+    starting:  { title: 'STARTING SOON',        sub: 'Grab a drink, we go live in a moment', done: 'WE ARE LIVE', chip: 'STANDBY' },
+    brb:       { title: 'BE RIGHT BACK',        sub: 'Stay with us', done: 'BACK ANY SECOND', chip: 'PAUSED' },
+    ending:    { title: 'THANKS FOR WATCHING',  sub: 'Stream ending. See you next time', done: '', chip: 'SIGNING OFF' },
+    countdown: { title: 'COMING UP',            sub: '', done: 'GO TIME', chip: 'UP NEXT' }
   };
   var p = presets[mode] || presets.starting;
   document.body.className = mode;
+  function hex(v) { return /^[0-9a-f]{3}([0-9a-f]{3})?$/i.test(v || '') ? '#' + v : null; }
+  if (hex(q.get('c1'))) document.documentElement.style.setProperty('--a1', hex(q.get('c1')));
+  if (hex(q.get('c2'))) document.documentElement.style.setProperty('--a2', hex(q.get('c2')));
+  if (q.get('logo') === '0') document.body.classList.add('nologo');
+
   var title = q.has('title') ? q.get('title') : p.title;
   var sub = q.has('sub') ? q.get('sub') : p.sub;
   var done = q.has('done') ? q.get('done') : p.done;
+  var chip = q.has('chip') ? q.get('chip') : p.chip;
   var minutes = parseFloat(q.get('minutes') || '0') || 0;
   var at = q.get('at');
 
@@ -79,10 +103,11 @@
   Array.from(title).forEach(function (ch, i) {
     var s = document.createElement('span');
     if (ch === ' ') s.innerHTML = '&nbsp;'; else s.textContent = ch;
-    s.style.animationDelay = (0.15 + i * 0.045) + 's';
+    s.style.animationDelay = (0.15 + i * 0.04) + 's';
     h1.appendChild(s);
   });
   document.getElementById('sub').textContent = sub;
+  if (chip) document.getElementById('chip').innerHTML = '<i></i>' + chip.replace(/[<&]/g, ' ');
 
   var timer = document.getElementById('timer'), bar = document.getElementById('bar');
   var target = 0, span = 0;
@@ -114,22 +139,6 @@
   tick();
   // RareStudio tells the page when its scene goes on air: a "5 minutes" countdown starts then.
   window.addEventListener('rarestudio-live', function () { start(); tick(); });
-
-  // Slow drifting stars.
-  var c = document.getElementById('stars'), g = c.getContext('2d'), stars = [];
-  function size() { c.width = innerWidth; c.height = innerHeight; }
-  size(); addEventListener('resize', size);
-  for (var i = 0; i < 90; i++) stars.push({ x: Math.random(), y: Math.random(), r: Math.random() * 1.8 + .4, s: Math.random() * .00006 + .00002, p: Math.random() * 6.28 });
-  (function frame(t) {
-    g.clearRect(0, 0, c.width, c.height);
-    stars.forEach(function (st) {
-      st.y -= st.s * 16; if (st.y < 0) st.y = 1;
-      g.globalAlpha = .25 + .55 * (.5 + .5 * Math.sin(t / 900 + st.p));
-      g.fillStyle = '#dfe6ff';
-      g.beginPath(); g.arc(st.x * c.width, st.y * c.height, st.r * c.height / 900, 0, 6.2832); g.fill();
-    });
-    requestAnimationFrame(frame);
-  })(0);
 })();
 </script>
 </body>

@@ -39,12 +39,27 @@ public:
 	};
 	Stats stats() const;
 
+	// Per destination, for the Stream Health panel.
+	struct DestStats {
+		int index = -1; // position in the list handed to start()
+		QString name;
+		bool active = false;
+		bool reconnecting = false;
+		int dropped = 0;
+		int total = 0;
+		quint64 bytes = 0;
+		double congestion = 0.0; // 0 = clear, 1 = the connection cannot keep up
+		int connectMs = 0;
+	};
+	QList<DestStats> destStats() const;
+
 signals:
 	void destinationState(int index, const QString &state);
 
 private:
 	struct Out {
 		int index = -1;
+		QString name;
 		SignalCtx *ctx = nullptr;
 		obs_output_t *output = nullptr;
 		obs_service_t *service = nullptr;

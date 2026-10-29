@@ -21,6 +21,7 @@
 #include "TransformDialog.h"
 #include "TransitionManager.h"
 #include "TransitionsDialog.h"
+#include "StreamHealth.h"
 #include "Updater.h"
 #include "WebDock.h"
 
@@ -343,6 +344,7 @@ MainWindow::MainWindow()
 	SplashScreen::pump();
 	buildStreamDock();
 	buildClipsDock();
+	buildHealthDock();
 	SplashScreen::pump();
 	buildWebDocks();
 	SplashScreen::pump();
@@ -642,6 +644,18 @@ void MainWindow::buildToolbar()
 	connect(m_goLive, &QPushButton::clicked, this, &MainWindow::toggleStream);
 }
 
+QString MainWindow::healthWord() const
+{
+	using L = StreamHealthPanel::Level;
+	return m_health->level() == L::Good ? "OK" : m_health->level() == L::Fair ? "FAIR" : "POOR";
+}
+
+const char *MainWindow::healthColour() const
+{
+	using L = StreamHealthPanel::Level;
+	return m_health->level() == L::Good ? "#4ade80" : m_health->level() == L::Fair ? "#fbbf24" : "#f87171";
+}
+
 void MainWindow::updateStats()
 {
 	// RAM = private bytes of this process (the browser docks run in their own process, not counted).
@@ -681,8 +695,30 @@ void MainWindow::updateStats()
 		m_lastBytesMs = now;
 		text += gap + stat("↑", QString("%1 kbps").arg(m_kbps, 0, 'f', 0)) + gap +
 			stat("DROPPED", QString("%1/%2").arg(s.dropped).arg(s.total), s.dropped ? "#f87171" : "#ececf4");
+		text += gap + stat("HEALTH", m_health ? healthWord() : "", healthColour());
 	} else {
 		m_lastBytesMs = 0;
+		if (m_health)
+			m_health->reset();
+		m_lagTotal = 0;
+	}
+	if (m_stream.live() && m_health) {
+		StreamHealthPanel::Machine m;
+		m.cpu = cpu;
+		m.fps = obs_get_active_fps();
+		const uint32_t total = obs_get_total_frames(), lagged = obs_get_lagged_frames();
+		const video_t *video = obs_get_video();
+		const uint32_t vTotal = video ? video_output_get_total_frames(video) : 0;
+		const uint32_t vSkipped = video ? video_output_get_skipped_frames(video) : 0;
+		if (m_lagTotal && total > m_lagTotal) {
+			m.lagPct = 100.0 * (lagged - m_lagLagged) / (total - m_lagTotal);
+			m.skipPct = vTotal > m_lagVideoTotal ? 100.0 * (vSkipped - m_lagSkipped) / (vTotal - m_lagVideoTotal) : 0.0;
+		}
+		m_lagTotal = total;
+		m_lagLagged = lagged;
+		m_lagVideoTotal = vTotal;
+		m_lagSkipped = vSkipped;
+		m_health->tick(m_stream.destStats(), m);
 	}
 	m_stats->setText(text);
 }
@@ -1954,6 +1990,26 @@ void MainWindow::checkForUpdates()
 	m_updater->checkNow(true);
 }
 // ---- Web docks ------------------------------------------------------------------------------
+
+void MainWindow::buildHealthDock()
+{
+	auto *dock = new QDockWidget("Stream Health", this);
+	dock->setObjectName("health");
+	m_health = new StreamHealthPanel;
+	dock->setWidget(m_health);
+	addDockWidget(Qt::RightDockWidgetArea, dock);
+	if (auto *stream = findChild<QDockWidget *>("stream"))
+		tabifyDockWidget(stream, dock);
+	// Tell the streamer the moment something goes wrong, wherever they are looking.
+	connect(m_health, &StreamHealthPanel::levelChanged, this, [this, dock](StreamHealthPanel::Level l, const QString &text) {
+		if (!m_stream.live() || l == StreamHealthPanel::Level::Good)
+			return;
+		statusBar()->showMessage((l == StreamHealthPanel::Level::Poor ? "Stream problem: " : "Stream warning: ") + text, 15000);
+		if (l == StreamHealthPanel::Level::Poor && !dock->isVisible())
+			dock->setWindowTitle("Stream Health  ⚠");
+	});
+	connect(dock, &QDockWidget::visibilityChanged, dock, [dock](bool) { dock->setWindowTitle("Stream Health"); });
+}
 
 void MainWindow::buildClipsDock()
 {

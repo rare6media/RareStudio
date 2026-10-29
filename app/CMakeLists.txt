@@ -11,6 +11,7 @@ add_executable(RareStudioApp WIN32
   Overlays.h Overlays.cpp
   CrashReport.h CrashReport.cpp
   SplashScreen.h SplashScreen.cpp
+  StreamHealth.h StreamHealth.cpp
   Autosave.h Autosave.cpp
   UiBits.h UiBits.cpp
   ObsCore.h ObsCore.cpp

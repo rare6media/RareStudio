@@ -22,6 +22,7 @@ class QPushButton;
 class QLabel;
 class QTableWidget;
 class Updater;
+class StreamHealthPanel;
 
 class MainWindow : public QMainWindow {
 	Q_OBJECT
@@ -51,6 +52,9 @@ private:
 	void buildCollectionsMenu(class QMenu *menu);
 	void switchCollection(const QString &name);
 	void buildClipsDock();
+	void buildHealthDock();
+	QString healthWord() const;
+	const char *healthColour() const;
 	void setReplayUi(bool armed);
 	void refreshStreamKeys(bool announce);
 	void upsertDestination(const QString &name, const QString &server, const QString &key);
@@ -131,6 +135,8 @@ private:
 	Recorder m_rec;
 	VerticalClip m_vertical;
 	ClipsPanel *m_clips = nullptr;
+	StreamHealthPanel *m_health = nullptr;
+	uint32_t m_lagTotal = 0, m_lagLagged = 0, m_lagVideoTotal = 0, m_lagSkipped = 0; // counters at the last health tick
 	HotkeyManager *m_hotkeys = nullptr;
 	QPushButton *m_recBtn = nullptr;
 	QPushButton *m_pauseBtn = nullptr;
